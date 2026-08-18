@@ -271,11 +271,19 @@ input[type="range"] { width: 100%; }
   font-weight: 600;
 }
 
+/* Both the checkbox rows' text block and the upscale row's label-only
+   block need identical treatment: grow to fill the row, but be allowed
+   to shrink below their text's natural (unwrapped) width — otherwise,
+   with flex-wrap on the row, the browser moves the whole block to its
+   own line the moment its unwrapped content is wider than the space
+   left after the checkbox/select, instead of just wrapping its text. */
+.toggle-row-text,
 .toggle-row-label-only {
   flex: 1 1 12rem;
   min-width: 0;
-  cursor: default;
 }
+
+.toggle-row-label-only { cursor: default; }
 
 .toggle-row select {
   flex: 0 1 auto;
