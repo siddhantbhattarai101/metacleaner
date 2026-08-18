@@ -35,10 +35,10 @@ No network calls, no server upload — everything runs on your machine.
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://siddhantbhattarai101.github.io/metacleaner/pubkey.gpg \
+curl -fsSL https://siddhantbhattarai.github.io/metacleaner/pubkey.gpg \
   | sudo tee /etc/apt/keyrings/metacleaner.asc > /dev/null
 
-echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai101.github.io/metacleaner stable main" \
+echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai.github.io/metacleaner stable main" \
   | sudo tee /etc/apt/sources.list.d/metacleaner.list
 
 sudo apt update
@@ -48,7 +48,7 @@ sudo apt install metacleaner
 This adds a dedicated apt source signed with a repo-specific GPG key (not a
 global `apt-key` entry) — standard practice for third-party apt
 repositories. The repo itself (`Packages`/`Release`/`InRelease`, GPG-signed)
-is published at <https://siddhantbhattarai101.github.io/metacleaner/> via
+is published at <https://siddhantbhattarai.github.io/metacleaner/> via
 GitHub Pages, built from the `.deb` this project's `cargo deb` produces (see
 [Package as a `.deb`](#package-as-a-deb) below).
 

@@ -31,7 +31,7 @@ image = { version = "0.25", default-features = false, features = ["png"] }
 # no extra asset files beyond the binary itself.
 [package.metadata.deb]
 name = "metacleaner"
-maintainer = "Siddhant Bhattarai <210212546+siddhantbhattarai101@users.noreply.github.com>"
+maintainer = "Siddhant Bhattarai <94698034+siddhantbhattarai@users.noreply.github.com>"
 copyright = "2026, Siddhant Bhattarai"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
