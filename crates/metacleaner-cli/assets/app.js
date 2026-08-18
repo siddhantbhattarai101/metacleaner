@@ -52,6 +52,13 @@ function fileKey(file) {
   return `${file.name}::${file.size}::${file.lastModified}`;
 }
 
+const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text"];
+
+function isTextFile(file) {
+  const name = file.name.toLowerCase();
+  return TEXT_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
 function addFiles(fileList) {
   const files = Array.from(fileList);
   if (files.length === 0) return;
@@ -71,6 +78,7 @@ function addFiles(fileList) {
     entries.set(id, {
       file,
       id,
+      isText: isTextFile(file),
       inspect: null,
       inspectError: null,
       cleanState: "idle",
@@ -132,8 +140,9 @@ async function runInspect(id) {
   if (!entry) return;
   const form = new FormData();
   form.append("file", entry.file, entry.file.name);
+  const endpoint = entry.isText ? "/api/inspect-text" : "/api/inspect";
   try {
-    const res = await fetch("/api/inspect", { method: "POST", body: form });
+    const res = await fetch(endpoint, { method: "POST", body: form });
     const data = await res.json();
     if (data.ok) {
       entry.inspect = data;
@@ -153,25 +162,30 @@ async function runClean(id) {
   entry.cleanError = null;
   render();
 
-  const noise = NOISE_LEVELS[optNoiseLevel.value] || NOISE_LEVELS.medium;
-
   const form = new FormData();
   form.append("file", entry.file, entry.file.name);
-  form.append("enhance", optEnhance.checked ? "true" : "false");
-  form.append("reset_fingerprint", optFingerprint.checked ? "true" : "false");
-  form.append("fingerprint_strength", String(noise.strength));
-  form.append("fingerprint_fraction", String(noise.fraction));
-  form.append("jpeg_quality", optQuality.value);
 
-  const mode = optUpscaleMode.value;
-  if (mode === "classical-2") form.append("upscale", "2");
-  else if (mode === "classical-4") form.append("upscale", "4");
-  else if (mode === "ai-4") form.append("ai_upscale", "true");
+  let endpoint = "/api/clean";
+  if (entry.isText) {
+    endpoint = "/api/clean-text";
+  } else {
+    const noise = NOISE_LEVELS[optNoiseLevel.value] || NOISE_LEVELS.medium;
+    form.append("enhance", optEnhance.checked ? "true" : "false");
+    form.append("reset_fingerprint", optFingerprint.checked ? "true" : "false");
+    form.append("fingerprint_strength", String(noise.strength));
+    form.append("fingerprint_fraction", String(noise.fraction));
+    form.append("jpeg_quality", optQuality.value);
 
-  if (optFormat.value) form.append("format", optFormat.value);
+    const mode = optUpscaleMode.value;
+    if (mode === "classical-2") form.append("upscale", "2");
+    else if (mode === "classical-4") form.append("upscale", "4");
+    else if (mode === "ai-4") form.append("ai_upscale", "true");
+
+    if (optFormat.value) form.append("format", optFormat.value);
+  }
 
   try {
-    const res = await fetch("/api/clean", { method: "POST", body: form });
+    const res = await fetch(endpoint, { method: "POST", body: form });
     const data = await res.json();
     if (!data.ok) {
       entry.cleanState = "error";
@@ -234,7 +248,9 @@ function renderCard(entry) {
 
   const meta = document.createElement("span");
   meta.className = "file-meta";
-  if (entry.inspect) {
+  if (entry.inspect && entry.isText) {
+    meta.textContent = `text · ${entry.inspect.char_count} chars`;
+  } else if (entry.inspect) {
     meta.textContent = `${entry.inspect.format.toUpperCase()} ${entry.inspect.width}x${entry.inspect.height} · ${formatBytes(entry.inspect.bytes)}`;
   } else if (entry.inspectError) {
     meta.textContent = "unreadable";
@@ -249,7 +265,7 @@ function renderCard(entry) {
     const badge = document.createElement("span");
     if (entry.inspect.clean) {
       badge.className = "badge badge-ok";
-      badge.textContent = "no metadata found";
+      badge.textContent = entry.isText ? "no hidden characters found" : "no metadata found";
     } else {
       badge.className = "badge badge-warn";
       badge.textContent = `${entry.inspect.findings.length} finding${entry.inspect.findings.length === 1 ? "" : "s"}`;
@@ -266,7 +282,9 @@ function renderCard(entry) {
         cat.className = "cat";
         cat.textContent = `[${f.category}]`;
         const label = document.createElement("span");
-        label.textContent = `${f.label} (${formatBytes(f.size_bytes)})`;
+        label.textContent = entry.isText
+          ? `${f.codepoint} ×${f.count}`
+          : `${f.label} (${formatBytes(f.size_bytes)})`;
         row.appendChild(cat);
         row.appendChild(label);
         findings.appendChild(row);

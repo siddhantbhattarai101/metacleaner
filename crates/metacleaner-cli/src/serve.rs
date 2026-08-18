@@ -55,6 +55,8 @@ pub async fn run(config: ServeConfig) -> std::io::Result<()> {
         .route("/app.js", get(app_js))
         .route("/api/inspect", post(api_inspect))
         .route("/api/clean", post(api_clean))
+        .route("/api/inspect-text", post(api_inspect_text))
+        .route("/api/clean-text", post(api_clean_text))
         // Belt-and-suspenders network-level cap, on top of the
         // application-level max_input_bytes check clean()/inspect() do
         // themselves — reject an oversized body before it's even buffered.
@@ -297,6 +299,92 @@ fn options_from_fields(fields: &HashMap<String, String>) -> Result<CleanOptions,
     }
 
     Ok(opts)
+}
+
+async fn api_inspect_text(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    let text = match String::from_utf8(upload.file_bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                format!("not valid UTF-8 text: {e}"),
+            )
+        }
+    };
+
+    let report = metacleaner_text::inspect_text(&text);
+    json_response(
+        StatusCode::OK,
+        serde_json::json!({
+            "ok": true,
+            "char_count": report.char_count,
+            "clean": report.is_clean(),
+            "findings": report.findings.iter().map(|f| serde_json::json!({
+                "category": f.category.as_str(),
+                "codepoint": format!("U+{:04X}", f.codepoint),
+                "count": f.count,
+            })).collect::<Vec<_>>(),
+        }),
+    )
+}
+
+async fn api_clean_text(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    let text = match String::from_utf8(upload.file_bytes) {
+        Ok(t) => t,
+        Err(e) => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                format!("not valid UTF-8 text: {e}"),
+            )
+        }
+    };
+
+    let opts = metacleaner_text::CleanTextOptions {
+        strip_zero_width_joiner: upload
+            .fields
+            .get("strip_zero_width_joiner")
+            .map(String::as_str)
+            == Some("true"),
+        ..Default::default()
+    };
+
+    let (cleaned, report) = metacleaner_text::clean_text(&text, &opts);
+
+    let stem = std::path::Path::new(&upload.file_name)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let ext = std::path::Path::new(&upload.file_name)
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_else(|| "txt".to_string());
+
+    json_response(
+        StatusCode::OK,
+        serde_json::json!({
+            "ok": true,
+            "filename": format!("{stem}-clean.{ext}"),
+            "mime": "text/plain",
+            "chars_in": report.chars_in,
+            "chars_out": report.chars_out,
+            "removed": report.removed.iter().map(|f| serde_json::json!({
+                "category": f.category.as_str(),
+                "codepoint": format!("U+{:04X}", f.codepoint),
+                "count": f.count,
+            })).collect::<Vec<_>>(),
+            "data_base64": BASE64.encode(cleaned.as_bytes()),
+        }),
+    )
 }
 
 fn mime_for(format: ImageFormat) -> &'static str {
