@@ -57,6 +57,8 @@ pub async fn run(config: ServeConfig) -> std::io::Result<()> {
         .route("/api/clean", post(api_clean))
         .route("/api/inspect-text", post(api_inspect_text))
         .route("/api/clean-text", post(api_clean_text))
+        .route("/api/inspect-doc", post(api_inspect_doc))
+        .route("/api/clean-doc", post(api_clean_doc))
         // Belt-and-suspenders network-level cap, on top of the
         // application-level max_input_bytes check clean()/inspect() do
         // themselves — reject an oversized body before it's even buffered.
@@ -385,6 +387,78 @@ async fn api_clean_text(multipart: Multipart) -> Response {
             "data_base64": BASE64.encode(cleaned.as_bytes()),
         }),
     )
+}
+
+async fn api_inspect_doc(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    match metacleaner_docs::inspect_ooxml(
+        &upload.file_bytes,
+        &metacleaner_docs::OoxmlOptions::default(),
+    ) {
+        Ok(report) => json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "ok": true,
+                "clean": report.is_clean(),
+                "findings": report.findings.iter().map(|f| serde_json::json!({
+                    "part": f.part,
+                    "field": f.field,
+                    "value": f.value,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
+        Err(e) => json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+    }
+}
+
+async fn api_clean_doc(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    match metacleaner_docs::clean_ooxml(
+        &upload.file_bytes,
+        &metacleaner_docs::OoxmlOptions::default(),
+    ) {
+        Ok((cleaned, report)) => {
+            let stem = std::path::Path::new(&upload.file_name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "document".to_string());
+            let ext = std::path::Path::new(&upload.file_name)
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_else(|| "docx".to_string());
+
+            json_response(
+                StatusCode::OK,
+                serde_json::json!({
+                    "ok": true,
+                    "filename": format!("{stem}-clean.{ext}"),
+                    "mime": doc_mime_for(&ext),
+                    "bytes_in": report.bytes_in,
+                    "bytes_out": report.bytes_out,
+                    "stripped_parts": report.stripped_parts,
+                    "data_base64": BASE64.encode(&cleaned),
+                }),
+            )
+        }
+        Err(e) => json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+    }
+}
+
+fn doc_mime_for(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        _ => "application/octet-stream",
+    }
 }
 
 fn mime_for(format: ImageFormat) -> &'static str {

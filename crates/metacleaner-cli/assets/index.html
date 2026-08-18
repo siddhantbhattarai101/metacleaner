@@ -22,12 +22,12 @@
 
 <main>
   <section id="drop-zone" class="drop-zone">
-    <p><strong>Drop images or text files here</strong> or</p>
+    <p><strong>Drop images, text, or office files here</strong> or</p>
     <label class="file-picker">
       Choose files
-      <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,.tif,.tiff,.txt,.md,.markdown,.text">
+      <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,.tif,.tiff,.txt,.md,.markdown,.text,.docx,.xlsx,.pptx">
     </label>
-    <p class="hint">Images: JPEG, PNG, WebP, BMP, GIF, TIFF &middot; Text: .txt, .md &middot; each file is inspected automatically on drop</p>
+    <p class="hint">Images: JPEG, PNG, WebP, BMP, GIF, TIFF &middot; Text: .txt, .md &middot; Office: .docx, .xlsx, .pptx &middot; each file is inspected automatically on drop</p>
     <p id="drop-confirm" class="drop-confirm" hidden></p>
   </section>
 
@@ -81,6 +81,10 @@
           </span>
         </label>
         <p class="option-help">Everything else invisible &mdash; zero-width spaces, bidi overrides, Unicode Tag block smuggling, variation-selector smuggling &mdash; is always stripped from text files.</p>
+      </div>
+
+      <div id="doc-options" hidden>
+        <p class="option-help">Author, last-modified-by, company, manager, title, keywords, comments, and any custom tracking properties are always stripped from Office documents &mdash; nothing to configure. Document content is untouched.</p>
       </div>
     </div>
 

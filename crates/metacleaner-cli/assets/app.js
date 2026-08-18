@@ -22,6 +22,7 @@ const optStripZwj = document.getElementById("opt-strip-zwj");
 
 const imageOptionsEl = document.getElementById("image-options");
 const textOptionsEl = document.getElementById("text-options");
+const docOptionsEl = document.getElementById("doc-options");
 const advancedDetailsEl = document.getElementById("advanced-details");
 
 // Plain-language noise-level choices, mapped to the underlying
@@ -58,10 +59,16 @@ function fileKey(file) {
 }
 
 const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text"];
+const DOC_EXTENSIONS = [".docx", ".xlsx", ".pptx"];
 
 function isTextFile(file) {
   const name = file.name.toLowerCase();
   return TEXT_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+function isDocFile(file) {
+  const name = file.name.toLowerCase();
+  return DOC_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
 
 function addFiles(fileList) {
@@ -84,6 +91,7 @@ function addFiles(fileList) {
       file,
       id,
       isText: isTextFile(file),
+      isDoc: isDocFile(file),
       inspect: null,
       inspectError: null,
       cleanState: "idle",
@@ -145,7 +153,9 @@ async function runInspect(id) {
   if (!entry) return;
   const form = new FormData();
   form.append("file", entry.file, entry.file.name);
-  const endpoint = entry.isText ? "/api/inspect-text" : "/api/inspect";
+  let endpoint = "/api/inspect";
+  if (entry.isText) endpoint = "/api/inspect-text";
+  else if (entry.isDoc) endpoint = "/api/inspect-doc";
   try {
     const res = await fetch(endpoint, { method: "POST", body: form });
     const data = await res.json();
@@ -174,6 +184,8 @@ async function runClean(id) {
   if (entry.isText) {
     endpoint = "/api/clean-text";
     form.append("strip_zero_width_joiner", optStripZwj.checked ? "true" : "false");
+  } else if (entry.isDoc) {
+    endpoint = "/api/clean-doc";
   } else {
     const noise = NOISE_LEVELS[optNoiseLevel.value] || NOISE_LEVELS.medium;
     form.append("enhance", optEnhance.checked ? "true" : "false");
@@ -248,12 +260,14 @@ function render() {
 // use case.
 function updateOptionsVisibility() {
   const all = Array.from(entries.values());
-  const hasImages = all.length === 0 || all.some((e) => !e.isText);
+  const hasImages = all.length === 0 || all.some((e) => !e.isText && !e.isDoc);
   const hasText = all.some((e) => e.isText);
+  const hasDocs = all.some((e) => e.isDoc);
 
   imageOptionsEl.hidden = !hasImages;
   advancedDetailsEl.hidden = !hasImages;
   textOptionsEl.hidden = !hasText;
+  docOptionsEl.hidden = !hasDocs;
 }
 
 function renderCard(entry) {
@@ -272,6 +286,8 @@ function renderCard(entry) {
   meta.className = "file-meta";
   if (entry.inspect && entry.isText) {
     meta.textContent = `text · ${entry.inspect.char_count} chars`;
+  } else if (entry.inspect && entry.isDoc) {
+    meta.textContent = "office document";
   } else if (entry.inspect) {
     meta.textContent = `${entry.inspect.format.toUpperCase()} ${entry.inspect.width}x${entry.inspect.height} · ${formatBytes(entry.inspect.bytes)}`;
   } else if (entry.inspectError) {
@@ -287,7 +303,11 @@ function renderCard(entry) {
     const badge = document.createElement("span");
     if (entry.inspect.clean) {
       badge.className = "badge badge-ok";
-      badge.textContent = entry.isText ? "no hidden characters found" : "no metadata found";
+      badge.textContent = entry.isText
+        ? "no hidden characters found"
+        : entry.isDoc
+          ? "no identifying metadata found"
+          : "no metadata found";
     } else {
       badge.className = "badge badge-warn";
       badge.textContent = `${entry.inspect.findings.length} finding${entry.inspect.findings.length === 1 ? "" : "s"}`;
@@ -302,11 +322,15 @@ function renderCard(entry) {
         row.className = "finding-row";
         const cat = document.createElement("span");
         cat.className = "cat";
-        cat.textContent = `[${f.category}]`;
+        cat.textContent = entry.isDoc ? `[${f.part}]` : `[${f.category}]`;
         const label = document.createElement("span");
-        label.textContent = entry.isText
-          ? `${f.codepoint} ×${f.count}`
-          : `${f.label} (${formatBytes(f.size_bytes)})`;
+        if (entry.isText) {
+          label.textContent = `${f.codepoint} ×${f.count}`;
+        } else if (entry.isDoc) {
+          label.textContent = `${f.field} = ${f.value}`;
+        } else {
+          label.textContent = `${f.label} (${formatBytes(f.size_bytes)})`;
+        }
         row.appendChild(cat);
         row.appendChild(label);
         findings.appendChild(row);
