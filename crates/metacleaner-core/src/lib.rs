@@ -22,6 +22,9 @@ use std::io::Cursor;
 use image::{DynamicImage, ImageDecoder, ImageEncoder};
 use rand::Rng;
 
+mod inspect;
+pub use inspect::{inspect, Finding, FindingCategory, InspectOptions, InspectReport};
+
 /// Default cap on raw input size, in bytes, before any parsing is attempted.
 /// 256 MiB is far beyond any legitimate photo; rejecting oversized input
 /// outright avoids doing any decode work on it at all.

@@ -2,10 +2,10 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Parser, ValueEnum};
+use clap::{Args, Parser, Subcommand, ValueEnum};
 use metacleaner_core::{
-    clean, CleanError, CleanOptions, ImageFormat, DEFAULT_MAX_DECODED_BYTES,
-    DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_INPUT_BYTES,
+    clean, inspect, CleanError, CleanOptions, ImageFormat, InspectOptions, InspectReport,
+    DEFAULT_MAX_DECODED_BYTES, DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_INPUT_BYTES,
 };
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -31,6 +31,32 @@ impl From<OutputFormatArg> for ImageFormat {
 #[derive(Parser, Debug)]
 #[command(name = "metaclean", version, about)]
 struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Strip metadata from images (destructive: writes cleaned output).
+    Clean(CleanArgs),
+    /// Report what metadata is present, without modifying anything.
+    Inspect(InspectArgs),
+}
+
+#[derive(Args, Debug)]
+struct GuardArgs {
+    /// Reject input files larger than this many megabytes, before reading them.
+    /// Guards against decompression-bomb-style attacks on untrusted input.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES / (1024 * 1024))]
+    max_input_mb: u64,
+
+    /// Reject images whose decoded width or height exceeds this many pixels.
+    #[arg(long, default_value_t = DEFAULT_MAX_IMAGE_DIMENSION)]
+    max_dimension: u32,
+}
+
+#[derive(Args, Debug)]
+struct CleanArgs {
     /// Image files to clean (JPEG, PNG, WebP). Accepts multiple for batch processing.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
@@ -63,37 +89,53 @@ struct Cli {
     #[arg(long, conflicts_with = "out_dir")]
     in_place: bool,
 
-    /// Reject input files larger than this many megabytes, before reading them.
-    /// Guards against decompression-bomb-style attacks on untrusted input.
-    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES / (1024 * 1024))]
-    max_input_mb: u64,
+    /// Emit machine-readable JSON instead of one line of text per file.
+    #[arg(long)]
+    json: bool,
 
-    /// Reject images whose decoded width or height exceeds this many pixels.
-    #[arg(long, default_value_t = DEFAULT_MAX_IMAGE_DIMENSION)]
-    max_dimension: u32,
+    #[command(flatten)]
+    guard: GuardArgs,
 
     /// Reject images that would require decoding more than this many megabytes of pixel data.
     #[arg(long, default_value_t = DEFAULT_MAX_DECODED_BYTES / (1024 * 1024))]
     max_decoded_mb: u64,
 }
 
+#[derive(Args, Debug)]
+struct InspectArgs {
+    /// Image files to inspect (JPEG, PNG, WebP). Accepts multiple.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    json: bool,
+
+    #[command(flatten)]
+    guard: GuardArgs,
+}
+
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    match &cli.command {
+        Command::Clean(args) => run_clean(args),
+        Command::Inspect(args) => run_inspect(args),
+    }
+}
 
-    let max_input_bytes = cli.max_input_mb * 1024 * 1024;
-
+fn run_clean(args: &CleanArgs) -> ExitCode {
     let opts = CleanOptions {
-        reset_fingerprint: !cli.no_fingerprint_reset,
-        fingerprint_strength: cli.fingerprint_strength,
-        fingerprint_fraction: cli.fingerprint_fraction,
-        jpeg_quality: cli.jpeg_quality,
-        output_format: cli.format.map(Into::into),
-        max_input_bytes: Some(max_input_bytes),
-        max_image_dimension: Some(cli.max_dimension),
-        max_decoded_bytes: Some(cli.max_decoded_mb * 1024 * 1024),
+        reset_fingerprint: !args.no_fingerprint_reset,
+        fingerprint_strength: args.fingerprint_strength,
+        fingerprint_fraction: args.fingerprint_fraction,
+        jpeg_quality: args.jpeg_quality,
+        output_format: args.format.map(Into::into),
+        max_input_bytes: Some(args.guard.max_input_mb * 1024 * 1024),
+        max_image_dimension: Some(args.guard.max_dimension),
+        max_decoded_bytes: Some(args.max_decoded_mb * 1024 * 1024),
     };
 
-    if let Some(dir) = &cli.out_dir {
+    if let Some(dir) = &args.out_dir {
         if let Err(e) = fs::create_dir_all(dir) {
             eprintln!(
                 "error: could not create output directory {}: {e}",
@@ -104,34 +146,61 @@ fn main() -> ExitCode {
     }
 
     let mut failures = 0usize;
-    let total = cli.inputs.len();
+    let total = args.inputs.len();
+    let mut json_results = Vec::new();
 
-    for input_path in &cli.inputs {
-        match process_one(input_path, &opts, cli.out_dir.as_deref(), cli.in_place) {
+    for input_path in &args.inputs {
+        match process_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
             Ok((out_path, report)) => {
-                println!(
-                    "ok   {} -> {} [{:?} {}x{}, {} -> {} bytes, fingerprint reset: {}]",
-                    input_path.display(),
-                    out_path.display(),
-                    report.output_format,
-                    report.width,
-                    report.height,
-                    report.bytes_in,
-                    report.bytes_out,
-                    report.fingerprint_reset,
-                );
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "output": out_path.display().to_string(),
+                        "format": format!("{:?}", report.output_format).to_lowercase(),
+                        "width": report.width,
+                        "height": report.height,
+                        "bytes_in": report.bytes_in,
+                        "bytes_out": report.bytes_out,
+                        "fingerprint_reset": report.fingerprint_reset,
+                    }));
+                } else {
+                    println!(
+                        "ok   {} -> {} [{:?} {}x{}, {} -> {} bytes, fingerprint reset: {}]",
+                        input_path.display(),
+                        out_path.display(),
+                        report.output_format,
+                        report.width,
+                        report.height,
+                        report.bytes_in,
+                        report.bytes_out,
+                        report.fingerprint_reset,
+                    );
+                }
             }
             Err(e) => {
-                eprintln!("fail {}: {e}", input_path.display());
                 failures += 1;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
             }
         }
     }
 
-    println!(
-        "\n{}/{total} images cleaned successfully.",
-        total - failures
-    );
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    } else {
+        println!(
+            "\n{}/{total} images cleaned successfully.",
+            total - failures
+        );
+    }
 
     if failures > 0 {
         ExitCode::FAILURE
@@ -181,6 +250,105 @@ fn destination_path(input: &Path, out_dir: Option<&Path>, format: ImageFormat) -
     match out_dir {
         Some(dir) => dir.join(file_name),
         None => input.with_file_name(file_name),
+    }
+}
+
+fn run_inspect(args: &InspectArgs) -> ExitCode {
+    let opts = InspectOptions {
+        max_input_bytes: Some(args.guard.max_input_mb * 1024 * 1024),
+        max_image_dimension: Some(args.guard.max_dimension),
+    };
+
+    let mut any_findings = false;
+    let mut any_failures = false;
+    let mut json_results = Vec::new();
+
+    for input_path in &args.inputs {
+        match inspect_one(input_path, &opts) {
+            Ok(report) => {
+                if !report.is_clean() {
+                    any_findings = true;
+                }
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "format": format!("{:?}", report.format).to_lowercase(),
+                        "width": report.width,
+                        "height": report.height,
+                        "bytes": report.bytes,
+                        "clean": report.is_clean(),
+                        "findings": report.findings.iter().map(|f| serde_json::json!({
+                            "category": f.category.as_str(),
+                            "label": f.label,
+                            "size_bytes": f.size_bytes,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    print_human_report(input_path, &report);
+                }
+            }
+            Err(e) => {
+                any_failures = true;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    }
+
+    if any_failures || any_findings {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn inspect_one(input_path: &Path, opts: &InspectOptions) -> Result<InspectReport, CliError> {
+    if let Some(max) = opts.max_input_bytes {
+        let size = fs::metadata(input_path)
+            .map_err(|e| CliError::Io(input_path.to_path_buf(), e))?
+            .len();
+        if size > max {
+            return Err(CliError::Clean(CleanError::InputTooLarge {
+                size: size as usize,
+                max,
+            }));
+        }
+    }
+
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    inspect(&bytes, opts).map_err(CliError::Clean)
+}
+
+fn print_human_report(input_path: &Path, report: &InspectReport) {
+    println!(
+        "{}  [{:?} {}x{}, {} bytes]",
+        input_path.display(),
+        report.format,
+        report.width,
+        report.height,
+        report.bytes,
+    );
+    if report.is_clean() {
+        println!("  no metadata findings");
+    } else {
+        for finding in &report.findings {
+            println!(
+                "  [{}] {} ({} bytes)",
+                finding.category, finding.label, finding.size_bytes
+            );
+        }
     }
 }
 
