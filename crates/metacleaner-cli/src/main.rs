@@ -113,6 +113,12 @@ struct CleanArgs {
     #[arg(long, value_enum)]
     format: Option<OutputFormatArg>,
 
+    /// Apply classical (non-AI) quality enhancement: auto-contrast plus
+    /// unsharp-mask sharpening. Off by default — this changes pixel values
+    /// beyond what's needed to strip metadata, so it's opt-in.
+    #[arg(long)]
+    enhance: bool,
+
     /// Overwrite the input file in place instead of writing a new file.
     #[arg(long, conflicts_with = "out_dir")]
     in_place: bool,
@@ -178,6 +184,7 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
         max_input_bytes: Some(args.guard.max_input_mb * 1024 * 1024),
         max_image_dimension: Some(args.guard.max_dimension),
         max_decoded_bytes: Some(args.max_decoded_mb * 1024 * 1024),
+        enhance: args.enhance,
     };
 
     if let Some(dir) = &args.out_dir {
@@ -208,10 +215,11 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
                         "bytes_in": report.bytes_in,
                         "bytes_out": report.bytes_out,
                         "fingerprint_reset": report.fingerprint_reset,
+                        "enhanced": report.enhanced,
                     }));
                 } else {
                     println!(
-                        "ok   {} -> {} [{:?} {}x{}, {} -> {} bytes, fingerprint reset: {}]",
+                        "ok   {} -> {} [{:?} {}x{}, {} -> {} bytes, fingerprint reset: {}, enhanced: {}]",
                         input_path.display(),
                         out_path.display(),
                         report.output_format,
@@ -220,6 +228,7 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
                         report.bytes_in,
                         report.bytes_out,
                         report.fingerprint_reset,
+                        report.enhanced,
                     );
                 }
             }

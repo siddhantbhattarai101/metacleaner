@@ -22,6 +22,7 @@ use std::io::Cursor;
 use image::{DynamicImage, ImageDecoder, ImageEncoder};
 use rand::Rng;
 
+mod enhance;
 mod inspect;
 pub use inspect::{inspect, Finding, FindingCategory, InspectOptions, InspectReport};
 
@@ -141,6 +142,12 @@ pub struct CleanOptions {
     /// this many bytes while reading pixel data. `None` disables the
     /// check. Defaults to [`DEFAULT_MAX_DECODED_BYTES`].
     pub max_decoded_bytes: Option<u64>,
+    /// Apply classical (non-AI) quality enhancement — auto-contrast plus
+    /// unsharp-mask sharpening — before encoding. Off by default: this
+    /// changes pixel values beyond what's needed for privacy, so it should
+    /// be an explicit choice, not a side effect of cleaning metadata. Runs
+    /// before `reset_fingerprint`'s noise so sharpening doesn't amplify it.
+    pub enhance: bool,
 }
 
 impl Default for CleanOptions {
@@ -154,6 +161,7 @@ impl Default for CleanOptions {
             max_input_bytes: Some(DEFAULT_MAX_INPUT_BYTES),
             max_image_dimension: Some(DEFAULT_MAX_IMAGE_DIMENSION),
             max_decoded_bytes: Some(DEFAULT_MAX_DECODED_BYTES),
+            enhance: false,
         }
     }
 }
@@ -168,6 +176,7 @@ pub struct CleanReport {
     pub bytes_in: usize,
     pub bytes_out: usize,
     pub fingerprint_reset: bool,
+    pub enhanced: bool,
 }
 
 #[derive(Debug)]
@@ -221,6 +230,11 @@ pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanErr
     let height = decoded.height();
 
     let mut rgba = decoded.into_rgba8();
+    if opts.enhance {
+        // Before the fingerprint-reset noise, not after: sharpening would
+        // otherwise amplify that noise instead of leaving it invisible.
+        enhance::enhance(&mut rgba);
+    }
     if opts.reset_fingerprint {
         reset_fingerprint(
             &mut rgba,
@@ -293,6 +307,7 @@ pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanErr
             bytes_in: input.len(),
             bytes_out: out.len(),
             fingerprint_reset: opts.reset_fingerprint,
+            enhanced: opts.enhance,
         },
         bytes: out,
     })

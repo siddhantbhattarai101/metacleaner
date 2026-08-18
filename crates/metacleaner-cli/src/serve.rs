@@ -203,6 +203,7 @@ async fn api_clean(multipart: Multipart) -> Response {
                     "bytes_in": cleaned.report.bytes_in,
                     "bytes_out": cleaned.report.bytes_out,
                     "fingerprint_reset": cleaned.report.fingerprint_reset,
+                    "enhanced": cleaned.report.enhanced,
                     "data_base64": BASE64.encode(&cleaned.bytes),
                 }),
             )
@@ -229,6 +230,9 @@ fn options_from_fields(fields: &HashMap<String, String>) -> Result<CleanOptions,
     }
     if let Some(v) = fields.get("jpeg_quality") {
         opts.jpeg_quality = v.parse().map_err(|_| "invalid jpeg_quality".to_string())?;
+    }
+    if let Some(v) = fields.get("enhance") {
+        opts.enhance = v == "true";
     }
     if let Some(v) = fields.get("format") {
         opts.output_format = Some(match v.as_str() {

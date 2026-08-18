@@ -6,6 +6,7 @@ const fileListSection = document.getElementById("file-list-section");
 const fileListEl = document.getElementById("file-list");
 const cleanAllBtn = document.getElementById("clean-all-btn");
 
+const optEnhance = document.getElementById("opt-enhance");
 const optFingerprint = document.getElementById("opt-fingerprint");
 const optStrength = document.getElementById("opt-strength");
 const optStrengthVal = document.getElementById("opt-strength-val");
@@ -74,6 +75,7 @@ async function runClean(id) {
 
   const form = new FormData();
   form.append("file", entry.file, entry.file.name);
+  form.append("enhance", optEnhance.checked ? "true" : "false");
   form.append("reset_fingerprint", optFingerprint.checked ? "true" : "false");
   form.append("fingerprint_strength", optStrength.value);
   form.append("fingerprint_fraction", String(Number(optFraction.value) / 100));
