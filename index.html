@@ -75,17 +75,17 @@
     <p class="tagline">A local, offline metadata cleaner and AI-tag remover for images, text/Markdown, HTML, and Office documents &mdash; written in Rust. No network calls, no upload: everything runs on your machine.</p>
     <div class="cta">
       <a class="btn btn-primary" href="#install">Install via apt</a>
-      <a class="btn btn-ghost" href="https://github.com/siddhantbhattarai101/metacleaner">Source on GitHub</a>
+      <a class="btn btn-ghost" href="https://github.com/siddhantbhattarai/metacleaner">Source on GitHub</a>
     </div>
   </header>
 
   <section id="install">
     <h2>Install (Debian / Ubuntu)</h2>
     <pre>sudo install -m 0755 -d /etc/apt/keyrings
-curl -fsSL https://siddhantbhattarai101.github.io/metacleaner/pubkey.gpg \
+curl -fsSL https://siddhantbhattarai.github.io/metacleaner/pubkey.gpg \
   | sudo tee /etc/apt/keyrings/metacleaner.asc > /dev/null
 
-echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai101.github.io/metacleaner stable main" \
+echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai.github.io/metacleaner stable main" \
   | sudo tee /etc/apt/sources.list.d/metacleaner.list
 
 sudo apt update
@@ -114,7 +114,7 @@ metaclean serve                          # local drag-and-drop web UI</pre>
   </section>
 
   <footer>
-    metacleaner &middot; MIT licensed &middot; <a href="https://github.com/siddhantbhattarai101/metacleaner">source &amp; full docs on GitHub</a>
+    metacleaner &middot; MIT licensed &middot; <a href="https://github.com/siddhantbhattarai/metacleaner">source &amp; full docs on GitHub</a>
   </footer>
 </div>
 </body>
