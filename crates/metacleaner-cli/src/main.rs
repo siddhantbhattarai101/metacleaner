@@ -50,9 +50,70 @@ enum Command {
     Clean(CleanArgs),
     /// Report what metadata is present, without modifying anything.
     Inspect(InspectArgs),
+    /// Strip invisible-Unicode steganography (zero-width chars, bidi
+    /// overrides, Unicode Tag block, variation-selector smuggling) from
+    /// plain text files (destructive: writes cleaned output).
+    CleanText(CleanTextArgs),
+    /// Report what invisible/steganography-relevant characters are
+    /// present in a text file, without modifying anything.
+    InspectText(InspectTextArgs),
     /// Run a local web UI (loopback-only by default) for drag-and-drop
     /// inspect/clean, with nothing ever leaving this machine.
     Serve(ServeArgs),
+}
+
+#[derive(Args, Debug)]
+struct CleanTextArgs {
+    /// Text files to clean. Accepts multiple for batch processing.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Directory to write cleaned files into (default: alongside each input, suffixed "-clean").
+    #[arg(short, long)]
+    out_dir: Option<PathBuf>,
+
+    /// Overwrite the input file in place instead of writing a new file.
+    #[arg(long, conflicts_with = "out_dir")]
+    in_place: bool,
+
+    /// Also strip the zero-width joiner (U+200D). Off by default because
+    /// it's legitimate and common (it's what joins emoji into
+    /// family/profession sequences) — only enable this if you specifically
+    /// need to defeat a watermarking scheme that uses it.
+    #[arg(long)]
+    strip_zero_width_joiner: bool,
+
+    /// Don't strip bidirectional-control characters (LRE/RLE/RLO/etc.).
+    /// Leave this off unless you have text that legitimately depends on
+    /// explicit bidi embedding.
+    #[arg(long)]
+    keep_bidi_controls: bool,
+
+    /// Don't strip the Unicode Tag block (U+E0000-U+E007F). This block has
+    /// no legitimate use in ordinary text — only disable this for testing.
+    #[arg(long)]
+    keep_unicode_tags: bool,
+
+    /// Don't strip supplementary-plane variation selectors
+    /// (U+E0100-U+E01EF). Disable if your text uses CJK Ideographic
+    /// Variation Database selectors legitimately.
+    #[arg(long)]
+    keep_variation_selectors: bool,
+
+    /// Emit machine-readable JSON instead of one line of text per file.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct InspectTextArgs {
+    /// Text files to inspect. Accepts multiple.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -171,6 +232,8 @@ async fn main() -> ExitCode {
     match &cli.command {
         Command::Clean(args) => run_clean(args),
         Command::Inspect(args) => run_inspect(args),
+        Command::CleanText(args) => run_clean_text(args),
+        Command::InspectText(args) => run_inspect_text(args),
         Command::Serve(args) => run_serve(args).await,
     }
 }
@@ -450,11 +513,202 @@ fn print_human_report(input_path: &Path, report: &InspectReport) {
     }
 }
 
+fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
+    let opts = metacleaner_text::CleanTextOptions {
+        strip_zero_width: true,
+        strip_zero_width_joiner: args.strip_zero_width_joiner,
+        strip_bidi_controls: !args.keep_bidi_controls,
+        strip_unicode_tags: !args.keep_unicode_tags,
+        strip_variation_selector_supplement: !args.keep_variation_selectors,
+    };
+
+    if let Some(dir) = &args.out_dir {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!(
+                "error: could not create output directory {}: {e}",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let mut failures = 0usize;
+    let total = args.inputs.len();
+    let mut json_results = Vec::new();
+
+    for input_path in &args.inputs {
+        match process_text_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
+            Ok((out_path, report)) => {
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "output": out_path.display().to_string(),
+                        "chars_in": report.chars_in,
+                        "chars_out": report.chars_out,
+                        "removed": report.removed.iter().map(|f| serde_json::json!({
+                            "category": f.category.as_str(),
+                            "codepoint": format!("U+{:04X}", f.codepoint),
+                            "count": f.count,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    println!(
+                        "ok   {} -> {} [{} -> {} chars, {} removed]",
+                        input_path.display(),
+                        out_path.display(),
+                        report.chars_in,
+                        report.chars_out,
+                        report.chars_in - report.chars_out,
+                    );
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    } else {
+        println!(
+            "\n{}/{total} text files cleaned successfully.",
+            total - failures
+        );
+    }
+
+    if failures > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn process_text_one(
+    input_path: &Path,
+    opts: &metacleaner_text::CleanTextOptions,
+    out_dir: Option<&Path>,
+    in_place: bool,
+) -> Result<(PathBuf, metacleaner_text::CleanTextReport), CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|e| CliError::Text(format!("not valid UTF-8 text: {e}")))?;
+
+    let (cleaned, report) = metacleaner_text::clean_text(&text, opts);
+
+    let out_path = if in_place {
+        input_path.to_path_buf()
+    } else {
+        text_destination_path(input_path, out_dir)
+    };
+
+    fs::write(&out_path, cleaned.as_bytes()).map_err(|e| CliError::Io(out_path.clone(), e))?;
+    Ok((out_path, report))
+}
+
+fn text_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let ext = input
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_else(|| "txt".to_string());
+    let file_name = format!("{stem}-clean.{ext}");
+
+    match out_dir {
+        Some(dir) => dir.join(file_name),
+        None => input.with_file_name(file_name),
+    }
+}
+
+fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
+    let mut any_findings = false;
+    let mut any_failures = false;
+    let mut json_results = Vec::new();
+
+    for input_path in &args.inputs {
+        match inspect_text_one(input_path) {
+            Ok(report) => {
+                if !report.is_clean() {
+                    any_findings = true;
+                }
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "char_count": report.char_count,
+                        "clean": report.is_clean(),
+                        "findings": report.findings.iter().map(|f| serde_json::json!({
+                            "category": f.category.as_str(),
+                            "codepoint": format!("U+{:04X}", f.codepoint),
+                            "count": f.count,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    println!("{}  [{} chars]", input_path.display(), report.char_count);
+                    if report.is_clean() {
+                        println!("  no invisible/steganography-relevant characters found");
+                    } else {
+                        for finding in &report.findings {
+                            println!(
+                                "  [{}] U+{:04X} x{}",
+                                finding.category, finding.codepoint, finding.count
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                any_failures = true;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    }
+
+    if any_failures || any_findings {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn inspect_text_one(input_path: &Path) -> Result<metacleaner_text::InspectTextReport, CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let text = String::from_utf8(bytes)
+        .map_err(|e| CliError::Text(format!("not valid UTF-8 text: {e}")))?;
+    Ok(metacleaner_text::inspect_text(&text))
+}
+
 #[derive(Debug)]
 enum CliError {
     Io(PathBuf, std::io::Error),
     Clean(CleanError),
     AiUpscale(String),
+    Text(String),
 }
 
 impl std::fmt::Display for CliError {
@@ -463,6 +717,7 @@ impl std::fmt::Display for CliError {
             CliError::Io(path, e) => write!(f, "I/O error on {}: {e}", path.display()),
             CliError::Clean(e) => write!(f, "{e}"),
             CliError::AiUpscale(e) => write!(f, "{e}"),
+            CliError::Text(e) => write!(f, "{e}"),
         }
     }
 }

@@ -668,6 +668,7 @@ dependencies = [
  "image",
  "metacleaner-ai",
  "metacleaner-core",
+ "metacleaner-text",
  "open",
  "serde_json",
  "tokio",
@@ -681,6 +682,10 @@ dependencies = [
  "rand",
  "thiserror",
 ]
+
+[[package]]
+name = "metacleaner-text"
+version = "0.1.0"
 
 [[package]]
 name = "mime"
