@@ -10,15 +10,18 @@
 
 use std::collections::HashMap;
 use std::net::SocketAddr;
+use std::sync::Arc;
 
-use axum::extract::{DefaultBodyLimit, Multipart};
+use axum::extract::{DefaultBodyLimit, Multipart, State};
 use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 use base64::engine::general_purpose::STANDARD as BASE64;
 use base64::Engine as _;
+use metacleaner_ai::AiUpscaler;
 use metacleaner_core::{clean, inspect, CleanOptions, ImageFormat, InspectOptions};
+use tokio::sync::Mutex;
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const STYLE_CSS: &str = include_str!("../assets/style.css");
@@ -30,7 +33,22 @@ pub struct ServeConfig {
     pub open_browser: bool,
 }
 
+/// The AI upscale model is only loaded on first use (it's a ~5MB model +
+/// ONNX Runtime init), not at server startup, so `serve` stays instant to
+/// launch for people who never touch that feature. Wrapped in a Mutex
+/// because ort's Session isn't safely shared across concurrent requests —
+/// fine for a personal local tool where concurrent AI-upscale requests
+/// aren't a real scenario.
+#[derive(Clone)]
+struct AppState {
+    ai_upscaler: Arc<Mutex<Option<AiUpscaler>>>,
+}
+
 pub async fn run(config: ServeConfig) -> std::io::Result<()> {
+    let state = AppState {
+        ai_upscaler: Arc::new(Mutex::new(None)),
+    };
+
     let app = Router::new()
         .route("/", get(index))
         .route("/style.css", get(style_css))
@@ -42,7 +60,8 @@ pub async fn run(config: ServeConfig) -> std::io::Result<()> {
         // themselves — reject an oversized body before it's even buffered.
         .layer(DefaultBodyLimit::max(
             metacleaner_core::DEFAULT_MAX_INPUT_BYTES as usize,
-        ));
+        ))
+        .with_state(state);
 
     let addr: SocketAddr = format!("{}:{}", config.host, config.port)
         .parse()
@@ -173,7 +192,7 @@ async fn api_inspect(multipart: Multipart) -> Response {
     }
 }
 
-async fn api_clean(multipart: Multipart) -> Response {
+async fn api_clean(State(state): State<AppState>, multipart: Multipart) -> Response {
     let upload = match parse_upload(multipart).await {
         Ok(u) => u,
         Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
@@ -184,7 +203,31 @@ async fn api_clean(multipart: Multipart) -> Response {
         Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
     };
 
-    match clean(&upload.file_bytes, &opts) {
+    let ai_upscale_requested = upload.fields.get("ai_upscale").map(String::as_str) == Some("true");
+
+    let input_bytes = if ai_upscale_requested {
+        let mut guard = state.ai_upscaler.lock().await;
+        if guard.is_none() {
+            match AiUpscaler::load() {
+                Ok(u) => *guard = Some(u),
+                Err(e) => {
+                    return json_error(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        format!("could not load AI upscale model: {e}"),
+                    );
+                }
+            }
+        }
+        let upscaler = guard.as_mut().expect("just initialized above");
+        match crate::ai_upscale::apply_ai_upscale(upscaler, &upload.file_bytes) {
+            Ok(bytes) => bytes,
+            Err(e) => return json_error(StatusCode::UNPROCESSABLE_ENTITY, e),
+        }
+    } else {
+        upload.file_bytes
+    };
+
+    match clean(&input_bytes, &opts) {
         Ok(cleaned) => {
             let stem = std::path::Path::new(&upload.file_name)
                 .file_stem()
@@ -204,6 +247,7 @@ async fn api_clean(multipart: Multipart) -> Response {
                     "bytes_out": cleaned.report.bytes_out,
                     "fingerprint_reset": cleaned.report.fingerprint_reset,
                     "enhanced": cleaned.report.enhanced,
+                    "ai_upscaled": ai_upscale_requested,
                     "data_base64": BASE64.encode(&cleaned.bytes),
                 }),
             )

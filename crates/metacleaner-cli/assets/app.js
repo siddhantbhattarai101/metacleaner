@@ -10,7 +10,8 @@ const cleanAllBtn = document.getElementById("clean-all-btn");
 const clearAllBtn = document.getElementById("clear-all-btn");
 
 const optEnhance = document.getElementById("opt-enhance");
-const optUpscale = document.getElementById("opt-upscale");
+const optUpscaleMode = document.getElementById("opt-upscale-mode");
+const upscaleHelp = document.getElementById("upscale-help");
 const optFingerprint = document.getElementById("opt-fingerprint");
 const noiseLevelRow = document.getElementById("noise-level-row");
 const optNoiseLevel = document.getElementById("opt-noise-level");
@@ -25,6 +26,17 @@ const NOISE_LEVELS = {
   medium: { strength: 2, fraction: 0.25 },
   strong: { strength: 3, fraction: 0.4 },
 };
+
+const UPSCALE_HELP = {
+  none: "Enlarges the image using high-quality resampling — sharper resize, doesn't invent detail that wasn't captured.",
+  "classical-2": "Enlarges the image using high-quality resampling — sharper resize, doesn't invent detail that wasn't captured.",
+  "classical-4": "Enlarges the image using high-quality resampling — sharper resize, doesn't invent detail that wasn't captured.",
+  "ai-4": "Uses a real AI model to invent plausible detail while enlarging 4× — genuinely improves low-res images, but the added detail is generated, not recovered from the original.",
+};
+
+optUpscaleMode.addEventListener("change", () => {
+  upscaleHelp.textContent = UPSCALE_HELP[optUpscaleMode.value] || UPSCALE_HELP.none;
+});
 
 optQuality.addEventListener("input", () => (optQualityVal.textContent = optQuality.value));
 optFingerprint.addEventListener("change", () => {
@@ -150,7 +162,12 @@ async function runClean(id) {
   form.append("fingerprint_strength", String(noise.strength));
   form.append("fingerprint_fraction", String(noise.fraction));
   form.append("jpeg_quality", optQuality.value);
-  form.append("upscale", optUpscale.value);
+
+  const mode = optUpscaleMode.value;
+  if (mode === "classical-2") form.append("upscale", "2");
+  else if (mode === "classical-4") form.append("upscale", "4");
+  else if (mode === "ai-4") form.append("ai_upscale", "true");
+
   if (optFormat.value) form.append("format", optFormat.value);
 
   try {
@@ -270,7 +287,8 @@ function renderCard(entry) {
   if (entry.cleanState === "working") {
     const s = document.createElement("div");
     s.className = "status-line";
-    s.textContent = "cleaning…";
+    s.textContent =
+      optUpscaleMode.value === "ai-4" ? "AI upscaling — may take a few seconds…" : "cleaning…";
     card.appendChild(s);
   } else if (entry.cleanState === "done") {
     const s = document.createElement("div");

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/metacleaner-core",
     "crates/metacleaner-cli",
+    "crates/metacleaner-ai",
 ]
 
 [workspace.package]

@@ -36,12 +36,13 @@
       <label class="toggle-row">
         <span class="toggle-row-label-only">
           <strong>Upscale</strong>
-          <span class="option-help">Enlarges the image using high-quality resampling. Sharper resize, not AI &mdash; it can't invent detail that wasn't captured.</span>
+          <span id="upscale-help" class="option-help">Enlarges the image using high-quality resampling &mdash; sharper resize, doesn't invent detail that wasn't captured.</span>
         </span>
-        <select id="opt-upscale">
-          <option value="1">No upscale</option>
-          <option value="2">2&times; size</option>
-          <option value="4">4&times; size</option>
+        <select id="opt-upscale-mode">
+          <option value="none">No upscale</option>
+          <option value="classical-2">2&times; size (resize)</option>
+          <option value="classical-4">4&times; size (resize)</option>
+          <option value="ai-4">AI 4&times; &mdash; low quality to HD (a few seconds)</option>
         </select>
       </label>
       <label class="toggle-row">

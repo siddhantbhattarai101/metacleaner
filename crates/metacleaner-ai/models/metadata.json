@@ -1,0 +1,48 @@
+{
+    "model_id": "real_esrgan_general_x4v3",
+    "model_name": "Real-ESRGAN-General-x4v3",
+    "runtime": "onnx",
+    "precision": "float",
+    "tool_versions": {
+        "qairt": "2.45.0.260326154327",
+        "onnx_runtime": "1.27.1"
+    },
+    "model_files": {
+        "real_esrgan_general_x4v3.onnx": {
+            "inputs": {
+                "image": {
+                    "shape": [
+                        1,
+                        3,
+                        128,
+                        128
+                    ],
+                    "dtype": "float32",
+                    "io_type": "image",
+                    "image_metadata": {},
+                    "value_range": [
+                        0.0,
+                        1.0
+                    ]
+                }
+            },
+            "outputs": {
+                "upscaled_image": {
+                    "shape": [
+                        1,
+                        3,
+                        512,
+                        512
+                    ],
+                    "dtype": "float32",
+                    "io_type": "image",
+                    "image_metadata": {},
+                    "value_range": [
+                        0.0,
+                        1.0
+                    ]
+                }
+            }
+        }
+    }
+}

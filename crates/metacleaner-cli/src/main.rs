@@ -8,6 +8,7 @@ use metacleaner_core::{
     DEFAULT_MAX_DECODED_BYTES, DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_INPUT_BYTES,
 };
 
+mod ai_upscale;
 mod serve;
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
@@ -125,6 +126,15 @@ struct CleanArgs {
     #[arg(long)]
     upscale: Option<f32>,
 
+    /// Upscale 4x using a real AI super-resolution model (Real-ESRGAN,
+    /// bundled) instead of classical resampling. This model HALLUCINATES
+    /// plausible detail that wasn't in the original — genuinely improves
+    /// low-res images, but the output is no longer a strictly faithful
+    /// representation of the source pixels. Meant for small/low-res
+    /// images; capped at 1600px per side on input.
+    #[arg(long, conflicts_with = "upscale")]
+    ai_upscale: bool,
+
     /// Overwrite the input file in place instead of writing a new file.
     #[arg(long, conflicts_with = "out_dir")]
     in_place: bool,
@@ -204,12 +214,30 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
         }
     }
 
+    let mut ai_upscaler = if args.ai_upscale {
+        match metacleaner_ai::AiUpscaler::load() {
+            Ok(u) => Some(u),
+            Err(e) => {
+                eprintln!("error: could not load AI upscale model: {e}");
+                return ExitCode::FAILURE;
+            }
+        }
+    } else {
+        None
+    };
+
     let mut failures = 0usize;
     let total = args.inputs.len();
     let mut json_results = Vec::new();
 
     for input_path in &args.inputs {
-        match process_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
+        match process_one(
+            input_path,
+            &opts,
+            args.out_dir.as_deref(),
+            args.in_place,
+            ai_upscaler.as_mut(),
+        ) {
             Ok((out_path, report)) => {
                 if args.json {
                     json_results.push(serde_json::json!({
@@ -223,10 +251,11 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
                         "bytes_out": report.bytes_out,
                         "fingerprint_reset": report.fingerprint_reset,
                         "enhanced": report.enhanced,
+                        "ai_upscaled": args.ai_upscale,
                     }));
                 } else {
                     println!(
-                        "ok   {} -> {} [{:?} {}x{}, {} -> {} bytes, fingerprint reset: {}, enhanced: {}]",
+                        "ok   {} -> {} [{:?} {}x{}, {} -> {} bytes, fingerprint reset: {}, enhanced: {}{}]",
                         input_path.display(),
                         out_path.display(),
                         report.output_format,
@@ -236,6 +265,7 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
                         report.bytes_out,
                         report.fingerprint_reset,
                         report.enhanced,
+                        if args.ai_upscale { ", AI-upscaled" } else { "" },
                     );
                 }
             }
@@ -275,6 +305,7 @@ fn process_one(
     opts: &CleanOptions,
     out_dir: Option<&Path>,
     in_place: bool,
+    ai_upscaler: Option<&mut metacleaner_ai::AiUpscaler>,
 ) -> Result<(PathBuf, metacleaner_core::CleanReport), CliError> {
     if let Some(max) = opts.max_input_bytes {
         let size = fs::metadata(input_path)
@@ -289,6 +320,12 @@ fn process_one(
     }
 
     let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let bytes = match ai_upscaler {
+        Some(upscaler) => {
+            ai_upscale::apply_ai_upscale(upscaler, &bytes).map_err(CliError::AiUpscale)?
+        }
+        None => bytes,
+    };
     let cleaned = clean(&bytes, opts).map_err(CliError::Clean)?;
 
     let out_path = if in_place {
@@ -417,6 +454,7 @@ fn print_human_report(input_path: &Path, report: &InspectReport) {
 enum CliError {
     Io(PathBuf, std::io::Error),
     Clean(CleanError),
+    AiUpscale(String),
 }
 
 impl std::fmt::Display for CliError {
@@ -424,6 +462,7 @@ impl std::fmt::Display for CliError {
         match self {
             CliError::Io(path, e) => write!(f, "I/O error on {}: {e}", path.display()),
             CliError::Clean(e) => write!(f, "{e}"),
+            CliError::AiUpscale(e) => write!(f, "{e}"),
         }
     }
 }
