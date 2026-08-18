@@ -320,19 +320,37 @@ async fn api_inspect_text(multipart: Multipart) -> Response {
     };
 
     let report = metacleaner_text::inspect_text(&text);
+    let fm_report = if is_markdown_filename(&upload.file_name) {
+        metacleaner_text::inspect_frontmatter(&text)
+    } else {
+        metacleaner_text::FrontmatterReport {
+            had_frontmatter: false,
+            removed: Vec::new(),
+        }
+    };
+
     json_response(
         StatusCode::OK,
         serde_json::json!({
             "ok": true,
             "char_count": report.char_count,
-            "clean": report.is_clean(),
+            "clean": report.is_clean() && fm_report.is_clean(),
             "findings": report.findings.iter().map(|f| serde_json::json!({
                 "category": f.category.as_str(),
                 "codepoint": format!("U+{:04X}", f.codepoint),
                 "count": f.count,
             })).collect::<Vec<_>>(),
+            "frontmatter_findings": fm_report.removed.iter().map(|f| serde_json::json!({
+                "key": f.key,
+                "value": f.value,
+            })).collect::<Vec<_>>(),
         }),
     )
+}
+
+fn is_markdown_filename(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".md") || lower.ends_with(".markdown")
 }
 
 async fn api_clean_text(multipart: Multipart) -> Response {
@@ -360,6 +378,13 @@ async fn api_clean_text(multipart: Multipart) -> Response {
         ..Default::default()
     };
 
+    let (text, fm_removed) = if is_markdown_filename(&upload.file_name) {
+        let (stripped, fm_report) = metacleaner_text::strip_frontmatter(&text);
+        (stripped, fm_report.removed)
+    } else {
+        (text, Vec::new())
+    };
+
     let (cleaned, report) = metacleaner_text::clean_text(&text, &opts);
 
     let stem = std::path::Path::new(&upload.file_name)
@@ -379,6 +404,7 @@ async fn api_clean_text(multipart: Multipart) -> Response {
             "mime": "text/plain",
             "chars_in": report.chars_in,
             "chars_out": report.chars_out,
+            "frontmatter_keys_removed": fm_removed.iter().map(|f| f.key.clone()).collect::<Vec<_>>(),
             "removed": report.removed.iter().map(|f| serde_json::json!({
                 "category": f.category.as_str(),
                 "codepoint": format!("U+{:04X}", f.codepoint),

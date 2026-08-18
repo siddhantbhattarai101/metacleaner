@@ -48,6 +48,13 @@
 
 * { box-sizing: border-box; }
 
+/* Several rules below set `display` on elements (via class/ID selectors)
+   that also get toggled with the `hidden` attribute in JS. Without this,
+   those rules — being author-stylesheet rules — win over the browser's
+   default `[hidden] { display: none }` UA-stylesheet rule regardless of
+   specificity, silently making `hidden` a no-op on those elements. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: var(--sans);

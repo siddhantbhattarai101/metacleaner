@@ -27,6 +27,11 @@
 
 use std::fmt;
 
+mod frontmatter;
+pub use frontmatter::{
+    inspect_frontmatter, strip_frontmatter, FrontmatterFinding, FrontmatterReport,
+};
+
 /// What kind of invisible/steganography-relevant character a
 /// [`TextFinding`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

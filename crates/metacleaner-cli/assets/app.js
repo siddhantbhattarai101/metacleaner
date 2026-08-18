@@ -302,6 +302,9 @@ function renderCard(entry) {
   card.appendChild(header);
 
   if (entry.inspect) {
+    const frontmatterFindings = entry.inspect.frontmatter_findings || [];
+    const totalFindings = entry.inspect.findings.length + frontmatterFindings.length;
+
     const badge = document.createElement("span");
     if (entry.inspect.clean) {
       badge.className = "badge badge-ok";
@@ -312,11 +315,11 @@ function renderCard(entry) {
           : "no metadata found";
     } else {
       badge.className = "badge badge-warn";
-      badge.textContent = `${entry.inspect.findings.length} finding${entry.inspect.findings.length === 1 ? "" : "s"}`;
+      badge.textContent = `${totalFindings} finding${totalFindings === 1 ? "" : "s"}`;
     }
     card.appendChild(badge);
 
-    if (entry.inspect.findings.length > 0) {
+    if (totalFindings > 0) {
       const findings = document.createElement("div");
       findings.className = "findings";
       for (const f of entry.inspect.findings) {
@@ -333,6 +336,18 @@ function renderCard(entry) {
         } else {
           label.textContent = `${f.label} (${formatBytes(f.size_bytes)})`;
         }
+        row.appendChild(cat);
+        row.appendChild(label);
+        findings.appendChild(row);
+      }
+      for (const f of frontmatterFindings) {
+        const row = document.createElement("div");
+        row.className = "finding-row";
+        const cat = document.createElement("span");
+        cat.className = "cat";
+        cat.textContent = "[frontmatter]";
+        const label = document.createElement("span");
+        label.textContent = `${f.key}: ${f.value}`;
         row.appendChild(cat);
         row.appendChild(label);
         findings.appendChild(row);

@@ -577,7 +577,7 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
 
     for input_path in &args.inputs {
         match process_text_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
-            Ok((out_path, report)) => {
+            Ok((out_path, report, frontmatter_removed)) => {
                 if args.json {
                     json_results.push(serde_json::json!({
                         "file": input_path.display().to_string(),
@@ -590,15 +590,29 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
                             "codepoint": format!("U+{:04X}", f.codepoint),
                             "count": f.count,
                         })).collect::<Vec<_>>(),
+                        "frontmatter_keys_removed": frontmatter_removed.iter().map(|f| f.key.clone()).collect::<Vec<_>>(),
                     }));
                 } else {
+                    let fm_note = if frontmatter_removed.is_empty() {
+                        String::new()
+                    } else {
+                        format!(
+                            ", frontmatter keys removed: {}",
+                            frontmatter_removed
+                                .iter()
+                                .map(|f| f.key.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        )
+                    };
                     println!(
-                        "ok   {} -> {} [{} -> {} chars, {} removed]",
+                        "ok   {} -> {} [{} -> {} chars, {} removed{}]",
                         input_path.display(),
                         out_path.display(),
                         report.chars_in,
                         report.chars_out,
                         report.chars_in - report.chars_out,
+                        fm_note,
                     );
                 }
             }
@@ -633,15 +647,37 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
     }
 }
 
+fn is_markdown(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(str::to_lowercase),
+        Some(ext) if ext == "md" || ext == "markdown"
+    )
+}
+
+#[allow(clippy::type_complexity)]
 fn process_text_one(
     input_path: &Path,
     opts: &metacleaner_text::CleanTextOptions,
     out_dir: Option<&Path>,
     in_place: bool,
-) -> Result<(PathBuf, metacleaner_text::CleanTextReport), CliError> {
+) -> Result<
+    (
+        PathBuf,
+        metacleaner_text::CleanTextReport,
+        Vec<metacleaner_text::FrontmatterFinding>,
+    ),
+    CliError,
+> {
     let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
     let text = String::from_utf8(bytes)
         .map_err(|e| CliError::Text(format!("not valid UTF-8 text: {e}")))?;
+
+    let (text, frontmatter_removed) = if is_markdown(input_path) {
+        let (stripped, fm_report) = metacleaner_text::strip_frontmatter(&text);
+        (stripped, fm_report.removed)
+    } else {
+        (text, Vec::new())
+    };
 
     let (cleaned, report) = metacleaner_text::clean_text(&text, opts);
 
@@ -652,7 +688,7 @@ fn process_text_one(
     };
 
     fs::write(&out_path, cleaned.as_bytes()).map_err(|e| CliError::Io(out_path.clone(), e))?;
-    Ok((out_path, report))
+    Ok((out_path, report, frontmatter_removed))
 }
 
 fn text_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
@@ -679,8 +715,8 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
 
     for input_path in &args.inputs {
         match inspect_text_one(input_path) {
-            Ok(report) => {
-                if !report.is_clean() {
+            Ok((report, fm_report)) => {
+                if !report.is_clean() || !fm_report.is_clean() {
                     any_findings = true;
                 }
                 if args.json {
@@ -688,16 +724,20 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                         "file": input_path.display().to_string(),
                         "ok": true,
                         "char_count": report.char_count,
-                        "clean": report.is_clean(),
+                        "clean": report.is_clean() && fm_report.is_clean(),
                         "findings": report.findings.iter().map(|f| serde_json::json!({
                             "category": f.category.as_str(),
                             "codepoint": format!("U+{:04X}", f.codepoint),
                             "count": f.count,
                         })).collect::<Vec<_>>(),
+                        "frontmatter_findings": fm_report.removed.iter().map(|f| serde_json::json!({
+                            "key": f.key,
+                            "value": f.value,
+                        })).collect::<Vec<_>>(),
                     }));
                 } else {
                     println!("{}  [{} chars]", input_path.display(), report.char_count);
-                    if report.is_clean() {
+                    if report.is_clean() && fm_report.is_clean() {
                         println!("  no invisible/steganography-relevant characters found");
                     } else {
                         for finding in &report.findings {
@@ -705,6 +745,9 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                                 "  [{}] U+{:04X} x{}",
                                 finding.category, finding.codepoint, finding.count
                             );
+                        }
+                        for finding in &fm_report.removed {
+                            println!("  [frontmatter] {} = {}", finding.key, finding.value);
                         }
                     }
                 }
@@ -735,11 +778,27 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
     }
 }
 
-fn inspect_text_one(input_path: &Path) -> Result<metacleaner_text::InspectTextReport, CliError> {
+fn inspect_text_one(
+    input_path: &Path,
+) -> Result<
+    (
+        metacleaner_text::InspectTextReport,
+        metacleaner_text::FrontmatterReport,
+    ),
+    CliError,
+> {
     let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
     let text = String::from_utf8(bytes)
         .map_err(|e| CliError::Text(format!("not valid UTF-8 text: {e}")))?;
-    Ok(metacleaner_text::inspect_text(&text))
+    let fm_report = if is_markdown(input_path) {
+        metacleaner_text::inspect_frontmatter(&text)
+    } else {
+        metacleaner_text::FrontmatterReport {
+            had_frontmatter: false,
+            removed: Vec::new(),
+        }
+    };
+    Ok((metacleaner_text::inspect_text(&text), fm_report))
 }
 
 fn run_clean_doc(args: &CleanDocArgs) -> ExitCode {
