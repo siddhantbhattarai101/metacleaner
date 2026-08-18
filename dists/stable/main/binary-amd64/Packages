@@ -1,0 +1,25 @@
+Package: metacleaner
+Version: 0.1.0-1
+Architecture: amd64
+Maintainer: Siddhant Bhattarai <210212546+siddhantbhattarai101@users.noreply.github.com>
+Installed-Size: 31122
+Depends: libc6 (>= 2.43), libstdc++6 (>= 13)
+Filename: pool/main/metacleaner_0.1.0-1_amd64.deb
+Size: 11576616
+MD5sum: e84fbecdc01fe299d887affc3066367c
+SHA1: 3ab6aff32e045a2f4a2e2298e3a461729ce28b2e
+SHA256: a6f3d0ad87b7f97d43db58cf829586d5d7aeebbe767282c72337234a6fcebc76
+Section: utils
+Priority: optional
+Description: Local, offline metadata cleaner and AI-tag remover for images, text/Markdown,
+ HTML, and Office documents.
+ A local, offline metadata cleaner and AI-tag remover for images
+ (JPEG/PNG/WebP/BMP/GIF/TIFF), text/Markdown, HTML, and Office documents
+ (DOCX/XLSX/PPTX). Strips EXIF, GPS, XMP, IPTC, C2PA content credentials, and
+ AI-generator signatures from images; invisible-Unicode steganography and
+ AI-identifying frontmatter/meta tags from text/Markdown/HTML; and
+ author/company/tracking properties from Office documents. Includes real AI
+ super-resolution upscaling (Real-ESRGAN) and a local drag-and-drop web UI
+ (`metaclean serve`). No network calls, no upload — everything runs on your
+ machine.
+

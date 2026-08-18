@@ -1,0 +1,121 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>metacleaner &middot; local metadata cleaner &amp; AI-tag remover</title>
+<meta name="description" content="metacleaner — a local, offline metadata cleaner and AI-tag remover for images, text/Markdown, HTML, and Office documents, written in Rust. Signed apt repository.">
+<style>
+  :root {
+    --bg: #f5f6f8; --surface: #ffffff; --surface-2: #fbfbfc;
+    --border: #e3e4e9; --text: #16171c; --muted: #6b6d78;
+    --accent: #3459e6; --accent-2: #1c7a34;
+    --code-bg: #16171c; --code-text: #e8e9ee;
+    --shadow: 0 4px 16px -4px rgba(16, 18, 27, 0.1), 0 1px 3px rgba(16, 18, 27, 0.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0e0f12; --surface: #18191e; --surface-2: #1e1f25;
+      --border: #2a2c34; --text: #f1f1f4; --muted: #a3a5b0;
+      --accent: #6c8cff; --accent-2: #4fd17a;
+      --code-bg: #0b0c0f; --code-text: #e8e9ee;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 16px/1.65 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; padding: 0 20px; }
+  a { color: var(--accent); }
+  code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace; }
+
+  header { padding: 64px 0 36px; border-bottom: 1px solid var(--border); }
+  .brand { display: flex; align-items: center; gap: 10px; }
+  .brand svg { width: 34px; height: 34px; color: var(--accent); flex-shrink: 0; }
+  h1 { font-size: clamp(32px, 6vw, 46px); letter-spacing: -0.02em; margin: 18px 0 8px; }
+  .tagline { font-size: clamp(16px, 2.4vw, 19px); color: var(--muted); margin: 0 0 24px; max-width: 620px; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--muted);
+    border: 1px solid var(--border); background: var(--surface); padding: 5px 11px; border-radius: 999px;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent-2); }
+  .cta { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 20px; }
+  .btn {
+    display: inline-flex; align-items: center; gap: 8px; padding: 10px 16px; border-radius: 10px;
+    font-weight: 600; font-size: 14px; border: 1px solid var(--border); text-decoration: none;
+  }
+  .btn-primary { background: var(--accent); color: #fff; border-color: transparent; }
+  .btn-ghost { background: var(--surface); color: var(--text); }
+
+  section { padding: 40px 0; border-bottom: 1px solid var(--border); }
+  h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.1em; color: var(--muted); margin: 0 0 18px; font-weight: 700; }
+  pre {
+    background: var(--code-bg); color: var(--code-text); padding: 16px 18px; border-radius: 10px;
+    overflow-x: auto; box-shadow: var(--shadow); font-size: 13.5px; line-height: 1.6;
+  }
+  ul.features { padding-left: 20px; margin: 0; color: var(--text); }
+  ul.features li { margin-bottom: 8px; }
+  ul.features b { color: var(--accent); }
+  footer { padding: 32px 0 60px; color: var(--muted); font-size: 14px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M12 3l7 3v5c0 4.6-3 8.4-7 9.6-4-1.2-7-5-7-9.6V6l7-3z" fill="currentColor" fill-opacity="0.18" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M9 12.2l2 2 4-4.4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <span class="badge"><span class="dot"></span> Signed apt repository</span>
+    </div>
+    <h1>metacleaner</h1>
+    <p class="tagline">A local, offline metadata cleaner and AI-tag remover for images, text/Markdown, HTML, and Office documents &mdash; written in Rust. No network calls, no upload: everything runs on your machine.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#install">Install via apt</a>
+      <a class="btn btn-ghost" href="https://github.com/siddhantbhattarai101/metacleaner">Source on GitHub</a>
+    </div>
+  </header>
+
+  <section id="install">
+    <h2>Install (Debian / Ubuntu)</h2>
+    <pre>sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://siddhantbhattarai101.github.io/metacleaner/pubkey.gpg \
+  | sudo tee /etc/apt/keyrings/metacleaner.asc > /dev/null
+
+echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai101.github.io/metacleaner stable main" \
+  | sudo tee /etc/apt/sources.list.d/metacleaner.list
+
+sudo apt update
+sudo apt install metacleaner</pre>
+    <p style="color: var(--muted); font-size: 14px;">This adds a dedicated apt source signed with a repo-specific GPG key (not a global <code>apt-key</code> entry) &mdash; standard practice for third-party apt repositories.</p>
+  </section>
+
+  <section>
+    <h2>What it does</h2>
+    <ul class="features">
+      <li><b>Images</b> (JPEG/PNG/WebP/BMP/GIF/TIFF) &mdash; strips EXIF, GPS, XMP, IPTC, C2PA content credentials, and AI-generator signatures (Stable Diffusion, DALL-E, Midjourney, Firefly); optional real AI super-resolution upscaling.</li>
+      <li><b>Text / Markdown</b> &mdash; strips invisible-Unicode steganography (zero-width chars, bidi overrides, Unicode Tag block smuggling) and AI-identifying frontmatter keys.</li>
+      <li><b>HTML</b> &mdash; strips identifying <code>&lt;meta&gt;</code> tags (generator, author) and non-conditional comments.</li>
+      <li><b>Office documents</b> (DOCX/XLSX/PPTX) &mdash; strips author, company, and tracking properties; document content untouched.</li>
+      <li><code>metaclean serve</code> runs a local, drag-and-drop web UI at <code>127.0.0.1</code> &mdash; loopback only, no authentication, nothing leaves your machine.</li>
+    </ul>
+  </section>
+
+  <section style="border-bottom: none;">
+    <h2>Usage</h2>
+    <pre>metaclean inspect photo.jpg              # report what's present, read-only
+metaclean clean photo.jpg                # strip it, writes photo-clean.jpg
+metaclean clean-text notes.md page.html  # invisible chars + frontmatter/meta
+metaclean clean-doc report.docx          # Office document metadata
+metaclean serve                          # local drag-and-drop web UI</pre>
+  </section>
+
+  <footer>
+    metacleaner &middot; MIT licensed &middot; <a href="https://github.com/siddhantbhattarai101/metacleaner">source &amp; full docs on GitHub</a>
+  </footer>
+</div>
+</body>
+</html>

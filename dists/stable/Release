@@ -1,0 +1,20 @@
+Architectures: amd64
+Codename: stable
+Components: main
+Date: Tue, 18 Aug 2026 11:20:48 +0000
+Description: metacleaner apt repository
+Label: metacleaner
+Origin: metacleaner
+Suite: stable
+MD5Sum:
+ 47fc901ec18b15b1f58126bbefdd5115             1191 main/binary-amd64/Packages
+ 53a8725ea96e40917fc8915b48f34734              780 main/binary-amd64/Packages.gz
+SHA1:
+ 626e74aa9c0f48e92ff2c2c7fa5e010e41204ab3             1191 main/binary-amd64/Packages
+ ed3ba833a51210618eee5e037e50ffc789a50c48              780 main/binary-amd64/Packages.gz
+SHA256:
+ a62658d681920426551f1b30f6ea1e092b3f6ecf28f1e00c06424b6071cb6318             1191 main/binary-amd64/Packages
+ 0cbacc771c8836928515d8e329bfdaecf5a8e9d6a871672d59c0dadafc66b59d              780 main/binary-amd64/Packages.gz
+SHA512:
+ 25600078b73f820a3ae7e7296a642b0a4c7a5dc91321e791a4a423a4dea37397614e0b5e296690cd3048dfb4d79ce92db2aeed0222a63df63cb065ef585c3199             1191 main/binary-amd64/Packages
+ 94aa6b0bd1abce3edc574800b8a3fc5b01897e6fbe01b96e352b43ba99ef99239928ab43d2bcc8b147c7ddc3124363603f1f17a137aa2ffaa19e4daa2fd194f1              780 main/binary-amd64/Packages.gz
