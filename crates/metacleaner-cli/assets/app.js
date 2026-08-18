@@ -24,6 +24,7 @@ const imageOptionsEl = document.getElementById("image-options");
 const textOptionsEl = document.getElementById("text-options");
 const docOptionsEl = document.getElementById("doc-options");
 const advancedDetailsEl = document.getElementById("advanced-details");
+const noFilesNoteEl = document.getElementById("no-files-note");
 
 // Plain-language noise-level choices, mapped to the underlying
 // strength/fraction knobs so nobody has to understand those directly.
@@ -260,7 +261,7 @@ function render() {
 // use case.
 function updateOptionsVisibility() {
   const all = Array.from(entries.values());
-  const hasImages = all.length === 0 || all.some((e) => !e.isText && !e.isDoc);
+  const hasImages = all.some((e) => !e.isText && !e.isDoc);
   const hasText = all.some((e) => e.isText);
   const hasDocs = all.some((e) => e.isDoc);
 
@@ -268,6 +269,7 @@ function updateOptionsVisibility() {
   advancedDetailsEl.hidden = !hasImages;
   textOptionsEl.hidden = !hasText;
   docOptionsEl.hidden = !hasDocs;
+  noFilesNoteEl.hidden = all.length > 0;
 }
 
 function renderCard(entry) {
