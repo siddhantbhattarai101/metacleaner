@@ -47,6 +47,9 @@ pub enum ImageFormat {
     Jpeg,
     Png,
     WebP,
+    Bmp,
+    Gif,
+    Tiff,
 }
 
 impl ImageFormat {
@@ -55,6 +58,9 @@ impl ImageFormat {
             ImageFormat::Jpeg => "jpg",
             ImageFormat::Png => "png",
             ImageFormat::WebP => "webp",
+            ImageFormat::Bmp => "bmp",
+            ImageFormat::Gif => "gif",
+            ImageFormat::Tiff => "tiff",
         }
     }
 
@@ -63,6 +69,9 @@ impl ImageFormat {
             image::ImageFormat::Jpeg => Some(ImageFormat::Jpeg),
             image::ImageFormat::Png => Some(ImageFormat::Png),
             image::ImageFormat::WebP => Some(ImageFormat::WebP),
+            image::ImageFormat::Bmp => Some(ImageFormat::Bmp),
+            image::ImageFormat::Gif => Some(ImageFormat::Gif),
+            image::ImageFormat::Tiff => Some(ImageFormat::Tiff),
             _ => None,
         }
     }
@@ -78,11 +87,20 @@ pub fn detect_format(bytes: &[u8]) -> Option<ImageFormat> {
 #[derive(Debug, thiserror::Error)]
 pub enum CleanError {
     #[error(
-        "could not determine image format, or format is unsupported (supported: JPEG, PNG, WebP)"
+        "could not determine image format, or format is unsupported (supported: JPEG, PNG, WebP, BMP, GIF, TIFF)"
     )]
     UnsupportedFormat,
     #[error("input is {size} bytes, which exceeds the {max}-byte limit")]
     InputTooLarge { size: usize, max: u64 },
+    #[error(
+        "{kind} input has multiple {unit} — metacleaner doesn't support this yet, and \
+         processing it would silently discard everything after the first {unit} (see the \
+         project roadmap)"
+    )]
+    MultiFrameNotSupported {
+        kind: &'static str,
+        unit: &'static str,
+    },
     #[error("failed to decode image (this includes exceeding configured size/memory limits): {0}")]
     Decode(#[from] image::ImageError),
     #[error("failed to encode image: {0}")]
@@ -172,6 +190,27 @@ pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanErr
     let input_format = detect_format(input).ok_or(CleanError::UnsupportedFormat)?;
     let output_format = opts.output_format.unwrap_or(input_format);
 
+    // Neither GifDecoder nor TiffDecoder expose a way to ask "is there more
+    // than one frame/page?" through the `image` crate's public API — their
+    // single-image decode path (which we rely on below) silently reads only
+    // the first one. Rather than quietly discarding an animation or the
+    // rest of a multi-page scan, reject it up front with a clear error.
+    match input_format {
+        ImageFormat::Gif if gif_has_multiple_frames(input) => {
+            return Err(CleanError::MultiFrameNotSupported {
+                kind: "GIF",
+                unit: "frames",
+            });
+        }
+        ImageFormat::Tiff if tiff_has_multiple_pages(input) => {
+            return Err(CleanError::MultiFrameNotSupported {
+                kind: "TIFF",
+                unit: "pages",
+            });
+        }
+        _ => {}
+    }
+
     let mut limits = image::Limits::no_limits();
     limits.max_image_width = opts.max_image_dimension;
     limits.max_image_height = opts.max_image_dimension;
@@ -221,6 +260,27 @@ pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanErr
                     .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
                     .map_err(|e| CleanError::Encode(e.to_string()))?;
             }
+            ImageFormat::Bmp => {
+                // BMP has no reliable cross-reader alpha support; drop it,
+                // same call we already make for JPEG.
+                let rgb = DynamicImage::ImageRgba8(rgba).into_rgb8();
+                let encoder = image::codecs::bmp::BmpEncoder::new(&mut cursor);
+                encoder
+                    .write_image(&rgb, width, height, image::ExtendedColorType::Rgb8)
+                    .map_err(|e| CleanError::Encode(e.to_string()))?;
+            }
+            ImageFormat::Gif => {
+                let encoder = image::codecs::gif::GifEncoder::new(cursor);
+                encoder
+                    .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
+                    .map_err(|e| CleanError::Encode(e.to_string()))?;
+            }
+            ImageFormat::Tiff => {
+                let encoder = image::codecs::tiff::TiffEncoder::new(cursor);
+                encoder
+                    .write_image(&rgba, width, height, image::ExtendedColorType::Rgba8)
+                    .map_err(|e| CleanError::Encode(e.to_string()))?;
+            }
         }
     }
 
@@ -262,7 +322,132 @@ fn decode_with_limits(
             decoder.set_limits(limits)?;
             Ok(DynamicImage::from_decoder(decoder)?)
         }
+        ImageFormat::Bmp => {
+            let mut decoder = image::codecs::bmp::BmpDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            Ok(DynamicImage::from_decoder(decoder)?)
+        }
+        ImageFormat::Gif => {
+            let mut decoder = image::codecs::gif::GifDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            Ok(DynamicImage::from_decoder(decoder)?)
+        }
+        ImageFormat::Tiff => {
+            let mut decoder = image::codecs::tiff::TiffDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            Ok(DynamicImage::from_decoder(decoder)?)
+        }
     }
+}
+
+/// Does this GIF have more than one Image Descriptor block (i.e. more than
+/// one frame)? A fully bounds-checked walk of the GIF89a block structure —
+/// header + Logical Screen Descriptor (+ optional Global Color Table), then
+/// a sequence of Extension (0x21) / Image Descriptor (0x2C) / Trailer (0x3B)
+/// blocks. Any inconsistency (truncation, unrecognized block) just returns
+/// `false`; the real decoder will report a proper error for genuinely
+/// malformed input.
+fn gif_has_multiple_frames(data: &[u8]) -> bool {
+    gif_scan_multiple_frames(data).unwrap_or(false)
+}
+
+fn gif_scan_multiple_frames(data: &[u8]) -> Option<bool> {
+    if data.len() < 13 || &data[0..3] != b"GIF" {
+        return Some(false);
+    }
+    let packed = data[10];
+    let mut pos = 13usize;
+    if packed & 0x80 != 0 {
+        let gct_size = 3usize * (1usize << (u32::from(packed & 0x07) + 1));
+        pos = pos.checked_add(gct_size)?;
+    }
+
+    let mut frame_count = 0u32;
+    loop {
+        let introducer = *data.get(pos)?;
+        pos = pos.checked_add(1)?;
+        match introducer {
+            0x21 => {
+                pos = pos.checked_add(1)?; // extension label byte
+                pos = skip_gif_sub_blocks(data, pos)?;
+            }
+            0x2C => {
+                frame_count += 1;
+                if frame_count > 1 {
+                    return Some(true);
+                }
+                let desc = data.get(pos..pos.checked_add(9)?)?;
+                let local_packed = desc[8];
+                pos = pos.checked_add(9)?;
+                if local_packed & 0x80 != 0 {
+                    let lct_size = 3usize * (1usize << (u32::from(local_packed & 0x07) + 1));
+                    pos = pos.checked_add(lct_size)?;
+                }
+                pos = pos.checked_add(1)?; // LZW minimum code size
+                pos = skip_gif_sub_blocks(data, pos)?;
+            }
+            0x3B => return Some(false), // trailer: only one frame seen
+            _ => return Some(false),    // malformed; let the real decoder report it
+        }
+    }
+}
+
+/// Skip a GIF sub-block chain (length-prefixed blocks terminated by a
+/// zero-length block) and return the position just past the terminator.
+fn skip_gif_sub_blocks(data: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        let size = *data.get(pos)?;
+        pos = pos.checked_add(1)?;
+        if size == 0 {
+            return Some(pos);
+        }
+        pos = pos.checked_add(size as usize)?;
+    }
+}
+
+/// Does this TIFF have more than one IFD (i.e. more than one page)? Reads
+/// IFD0's entry count and jumps past all entries to the "next IFD offset"
+/// field — non-zero means at least one more page exists. Fully
+/// bounds-checked; any inconsistency returns `false`.
+fn tiff_has_multiple_pages(data: &[u8]) -> bool {
+    tiff_scan_multiple_pages(data).unwrap_or(false)
+}
+
+fn tiff_scan_multiple_pages(data: &[u8]) -> Option<bool> {
+    let little_endian = match data.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return Some(false),
+    };
+    let read_u16 = |off: usize| -> Option<u16> {
+        let end = off.checked_add(2)?;
+        let b = data.get(off..end)?;
+        Some(if little_endian {
+            u16::from_le_bytes([b[0], b[1]])
+        } else {
+            u16::from_be_bytes([b[0], b[1]])
+        })
+    };
+    let read_u32 = |off: usize| -> Option<u32> {
+        let end = off.checked_add(4)?;
+        let b = data.get(off..end)?;
+        Some(if little_endian {
+            u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+        } else {
+            u32::from_be_bytes([b[0], b[1], b[2], b[3]])
+        })
+    };
+
+    if read_u16(2)? != 42 {
+        return Some(false);
+    }
+    let ifd0_offset = read_u32(4)? as usize;
+    let entry_count = read_u16(ifd0_offset)? as usize;
+    let entries_end = ifd0_offset
+        .checked_add(2)?
+        .checked_add(entry_count.checked_mul(12)?)?;
+    let next_ifd_offset = read_u32(entries_end)?;
+    Some(next_ifd_offset != 0)
 }
 
 /// Apply an invisible, randomized per-pixel perturbation to defeat
@@ -479,5 +664,126 @@ mod tests {
         let cleaned = clean(&input, &opts).expect("4x4 is within the 1000px limit");
         assert_eq!(cleaned.report.width, 4);
         assert_eq!(cleaned.report.height, 4);
+    }
+
+    fn encode(img: &DynamicImage, format: image::ImageFormat) -> Vec<u8> {
+        let mut out = Vec::new();
+        img.write_to(&mut Cursor::new(&mut out), format).unwrap();
+        out
+    }
+
+    fn tiny_rgba_image() -> DynamicImage {
+        DynamicImage::ImageRgba8(ImageBuffer::from_fn(4, 4, |x, y| {
+            Rgba([(x * 40) as u8, (y * 40) as u8, 128, 255])
+        }))
+    }
+
+    #[test]
+    fn round_trips_bmp() {
+        let input = encode(&tiny_rgba_image(), image::ImageFormat::Bmp);
+        let cleaned = clean(&input, &CleanOptions::default()).expect("BMP should clean");
+        assert_eq!(cleaned.report.input_format, ImageFormat::Bmp);
+        assert_eq!(cleaned.report.width, 4);
+        assert_eq!(cleaned.report.height, 4);
+        assert_eq!(detect_format(&cleaned.bytes), Some(ImageFormat::Bmp));
+    }
+
+    #[test]
+    fn round_trips_tiff() {
+        let input = encode(&tiny_rgba_image(), image::ImageFormat::Tiff);
+        let cleaned = clean(&input, &CleanOptions::default()).expect("TIFF should clean");
+        assert_eq!(cleaned.report.input_format, ImageFormat::Tiff);
+        assert_eq!(cleaned.report.width, 4);
+        assert_eq!(cleaned.report.height, 4);
+        assert_eq!(detect_format(&cleaned.bytes), Some(ImageFormat::Tiff));
+    }
+
+    #[test]
+    fn round_trips_single_frame_gif() {
+        let input = encode(&tiny_rgba_image(), image::ImageFormat::Gif);
+        let cleaned =
+            clean(&input, &CleanOptions::default()).expect("single-frame GIF should clean");
+        assert_eq!(cleaned.report.input_format, ImageFormat::Gif);
+        assert_eq!(cleaned.report.width, 4);
+        assert_eq!(cleaned.report.height, 4);
+        assert_eq!(detect_format(&cleaned.bytes), Some(ImageFormat::Gif));
+    }
+
+    fn make_animated_gif() -> Vec<u8> {
+        let mut out = Vec::new();
+        {
+            let mut encoder = image::codecs::gif::GifEncoder::new(Cursor::new(&mut out));
+            let frame1 = image::Frame::new(ImageBuffer::from_pixel(4, 4, Rgba([255, 0, 0, 255])));
+            let frame2 = image::Frame::new(ImageBuffer::from_pixel(4, 4, Rgba([0, 255, 0, 255])));
+            encoder.encode_frame(frame1).unwrap();
+            encoder.encode_frame(frame2).unwrap();
+        }
+        out
+    }
+
+    #[test]
+    fn rejects_animated_gif() {
+        let input = make_animated_gif();
+        let err = clean(&input, &CleanOptions::default()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CleanError::MultiFrameNotSupported {
+                    kind: "GIF",
+                    unit: "frames"
+                }
+            ),
+            "expected MultiFrameNotSupported, got {err:?}"
+        );
+    }
+
+    fn make_multi_page_tiff() -> Vec<u8> {
+        // A minimal, well-formed IFD0 whose "next IFD offset" field is
+        // non-zero — enough to trigger the multi-page guard without
+        // needing a second, fully-valid image.
+        let mut ifd0 = Vec::new();
+        ifd0.extend_from_slice(b"II");
+        ifd0.extend_from_slice(&42u16.to_le_bytes());
+        ifd0.extend_from_slice(&8u32.to_le_bytes()); // IFD0 offset
+        ifd0.extend_from_slice(&1u16.to_le_bytes()); // entry count
+        ifd0.extend_from_slice(&0x0100u16.to_le_bytes()); // tag: ImageWidth
+        ifd0.extend_from_slice(&4u16.to_le_bytes()); // type: LONG
+        ifd0.extend_from_slice(&1u32.to_le_bytes()); // count
+        ifd0.extend_from_slice(&4u32.to_le_bytes()); // value
+        ifd0.extend_from_slice(&999u32.to_le_bytes()); // next IFD offset: non-zero
+        ifd0
+    }
+
+    #[test]
+    fn rejects_multi_page_tiff() {
+        let input = make_multi_page_tiff();
+        assert!(tiff_has_multiple_pages(&input));
+        let err = clean(&input, &CleanOptions::default()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                CleanError::MultiFrameNotSupported {
+                    kind: "TIFF",
+                    unit: "pages"
+                }
+            ),
+            "expected MultiFrameNotSupported, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_single_page_tiff_bytes() {
+        // Same shape as make_multi_page_tiff but with next-IFD-offset = 0.
+        let mut ifd0 = Vec::new();
+        ifd0.extend_from_slice(b"II");
+        ifd0.extend_from_slice(&42u16.to_le_bytes());
+        ifd0.extend_from_slice(&8u32.to_le_bytes());
+        ifd0.extend_from_slice(&1u16.to_le_bytes());
+        ifd0.extend_from_slice(&0x0100u16.to_le_bytes());
+        ifd0.extend_from_slice(&4u16.to_le_bytes());
+        ifd0.extend_from_slice(&1u32.to_le_bytes());
+        ifd0.extend_from_slice(&4u32.to_le_bytes());
+        ifd0.extend_from_slice(&0u32.to_le_bytes()); // next IFD offset: none
+        assert!(!tiff_has_multiple_pages(&ifd0));
     }
 }

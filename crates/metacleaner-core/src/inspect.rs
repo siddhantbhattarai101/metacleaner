@@ -117,6 +117,9 @@ pub fn inspect(input: &[u8], opts: &InspectOptions) -> Result<InspectReport, Cle
         ImageFormat::Jpeg => inspect_jpeg(input),
         ImageFormat::Png => inspect_png(input),
         ImageFormat::WebP => inspect_webp(input),
+        ImageFormat::Bmp => Vec::new(), // classic BMP has no standard embedded-metadata mechanism
+        ImageFormat::Gif => inspect_gif(input),
+        ImageFormat::Tiff => inspect_tiff(input),
     };
 
     Ok(InspectReport {
@@ -150,6 +153,24 @@ fn header_dimensions(
         }
         ImageFormat::WebP => {
             let mut decoder = image::codecs::webp::WebPDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            decoder.dimensions()
+        }
+        ImageFormat::Bmp => {
+            let mut decoder = image::codecs::bmp::BmpDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            decoder.dimensions()
+        }
+        ImageFormat::Gif => {
+            // First frame's dimensions only, even for an animated GIF —
+            // fine for a read-only report; `clean()` is the one that
+            // refuses multi-frame input outright to avoid data loss.
+            let mut decoder = image::codecs::gif::GifDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            decoder.dimensions()
+        }
+        ImageFormat::Tiff => {
+            let mut decoder = image::codecs::tiff::TiffDecoder::new(cursor)?;
             decoder.set_limits(limits)?;
             decoder.dimensions()
         }
@@ -565,12 +586,22 @@ fn contains_any(data: &[u8], markers: &[&[u8]]) -> bool {
 /// panics on truncated/malformed input — every offset is checked, so
 /// worst case this just returns `false`.
 fn tiff_has_gps(data: &[u8]) -> bool {
-    let little_endian = match data.get(0..2) {
-        Some(b"II") => true,
-        Some(b"MM") => false,
-        _ => return false,
-    };
+    tiff_ifd0_tags(data).contains(&0x8825)
+}
 
+/// Every tag id present in a TIFF/EXIF blob's IFD0. Shared by GPS detection
+/// above and the standalone-TIFF inspector below. Fully bounds-checked;
+/// any inconsistency just yields an empty list.
+fn tiff_ifd0_tags(data: &[u8]) -> Vec<u16> {
+    tiff_scan_ifd0_tags(data).unwrap_or_default()
+}
+
+fn tiff_scan_ifd0_tags(data: &[u8]) -> Option<Vec<u16>> {
+    let little_endian = match data.get(0..2)? {
+        b"II" => true,
+        b"MM" => false,
+        _ => return None,
+    };
     let read_u16 = |off: usize| -> Option<u16> {
         let end = off.checked_add(2)?;
         let b = data.get(off..end)?;
@@ -590,31 +621,174 @@ fn tiff_has_gps(data: &[u8]) -> bool {
         })
     };
 
-    if read_u16(2) != Some(42) {
-        return false;
+    if read_u16(2)? != 42 {
+        return None;
     }
-    let Some(ifd0_offset) = read_u32(4) else {
-        return false;
-    };
-    let ifd0_offset = ifd0_offset as usize;
-    let Some(entry_count) = read_u16(ifd0_offset) else {
-        return false;
-    };
+    let ifd0_offset = read_u32(4)? as usize;
+    let entry_count = read_u16(ifd0_offset)? as usize;
 
-    for i in 0..entry_count as usize {
-        let Some(step) = i.checked_mul(12) else {
-            return false;
+    let mut tags = Vec::with_capacity(entry_count.min(1024));
+    for i in 0..entry_count {
+        let step = i.checked_mul(12)?;
+        let entry_off = ifd0_offset.checked_add(2)?.checked_add(step)?;
+        tags.push(read_u16(entry_off)?);
+    }
+    Some(tags)
+}
+
+// ---------------------------------------------------------------------
+// GIF: walk blocks after the header + Logical Screen Descriptor.
+// ---------------------------------------------------------------------
+
+fn inspect_gif(input: &[u8]) -> Vec<Finding> {
+    scan_gif(input).unwrap_or_default()
+}
+
+fn scan_gif(data: &[u8]) -> Option<Vec<Finding>> {
+    let mut findings = Vec::new();
+    if data.len() < 13 || &data[0..3] != b"GIF" {
+        return Some(findings);
+    }
+    let packed = data[10];
+    let mut pos = 13usize;
+    if packed & 0x80 != 0 {
+        let gct_size = 3usize * (1usize << (u32::from(packed & 0x07) + 1));
+        pos = pos.checked_add(gct_size)?;
+    }
+
+    loop {
+        let Some(&introducer) = data.get(pos) else {
+            break;
         };
-        let Some(entry_off) = ifd0_offset.checked_add(2).and_then(|v| v.checked_add(step)) else {
-            return false;
-        };
-        match read_u16(entry_off) {
-            Some(0x8825) => return true,
-            Some(_) => continue,
-            None => return false,
+        pos = pos.checked_add(1)?;
+        match introducer {
+            0x21 => {
+                let label = *data.get(pos)?;
+                pos = pos.checked_add(1)?;
+                match label {
+                    0xFE => {
+                        // Comment Extension: free-form text, worth scanning.
+                        let (comment, new_pos) = read_gif_sub_blocks(data, pos)?;
+                        let is_ai = looks_like_ai_generation_text(&comment);
+                        findings.push(Finding {
+                            category: if is_ai {
+                                FindingCategory::AiGenerator
+                            } else {
+                                FindingCategory::Unknown
+                            },
+                            label: if is_ai {
+                                "AI-generation parameters in GIF comment".into()
+                            } else {
+                                "GIF comment extension".into()
+                            },
+                            size_bytes: comment.len(),
+                        });
+                        pos = new_pos;
+                    }
+                    0xFF => {
+                        // Application Extension: first 11 bytes identify the app.
+                        // "NETSCAPE2.0" is standard loop-count signaling, not
+                        // metadata; anything else gets surfaced.
+                        let (app_data, new_pos) = read_gif_sub_blocks(data, pos)?;
+                        let app_id = app_data
+                            .get(..11)
+                            .and_then(|b| std::str::from_utf8(b).ok())
+                            .unwrap_or("");
+                        if app_id != "NETSCAPE2.0" {
+                            findings.push(Finding {
+                                category: FindingCategory::Unknown,
+                                label: format!("GIF application extension (\"{app_id}\")"),
+                                size_bytes: app_data.len(),
+                            });
+                        }
+                        pos = new_pos;
+                    }
+                    _ => {
+                        // Graphic Control / Plain Text / reserved: structural, skip.
+                        pos = skip_gif_sub_blocks(data, pos)?;
+                    }
+                }
+            }
+            0x2C => {
+                // Image Descriptor: skip past this frame's pixel data.
+                let desc = data.get(pos..pos.checked_add(9)?)?;
+                let local_packed = desc[8];
+                pos = pos.checked_add(9)?;
+                if local_packed & 0x80 != 0 {
+                    let lct_size = 3usize * (1usize << (u32::from(local_packed & 0x07) + 1));
+                    pos = pos.checked_add(lct_size)?;
+                }
+                pos = pos.checked_add(1)?; // LZW minimum code size
+                pos = skip_gif_sub_blocks(data, pos)?;
+            }
+            0x3B => break, // trailer
+            _ => break,    // malformed; let the real decoder report it
         }
     }
-    false
+    Some(findings)
+}
+
+/// Read a GIF sub-block chain (length-prefixed blocks terminated by a
+/// zero-length block), concatenating their contents.
+fn read_gif_sub_blocks(data: &[u8], mut pos: usize) -> Option<(Vec<u8>, usize)> {
+    let mut collected = Vec::new();
+    loop {
+        let size = *data.get(pos)?;
+        pos = pos.checked_add(1)?;
+        if size == 0 {
+            return Some((collected, pos));
+        }
+        let end = pos.checked_add(size as usize)?;
+        collected.extend_from_slice(data.get(pos..end)?);
+        pos = end;
+    }
+}
+
+/// Same as [`read_gif_sub_blocks`] but discards the content — used when we
+/// only need to skip past a block we don't inspect.
+fn skip_gif_sub_blocks(data: &[u8], mut pos: usize) -> Option<usize> {
+    loop {
+        let size = *data.get(pos)?;
+        pos = pos.checked_add(1)?;
+        if size == 0 {
+            return Some(pos);
+        }
+        pos = pos.checked_add(size as usize)?;
+    }
+}
+
+// ---------------------------------------------------------------------
+// TIFF: unlike the other formats, the whole file *is* a tag structure —
+// check IFD0 for GPS and for tags that identify the device/author/tool.
+// ---------------------------------------------------------------------
+
+const TIFF_IDENTIFYING_TAGS: &[u16] = &[
+    0x010F, // Make
+    0x0110, // Model
+    0x0131, // Software
+    0x0132, // DateTime
+    0x013B, // Artist
+    0x8298, // Copyright
+    0x8769, // Exif IFD pointer
+];
+
+fn inspect_tiff(input: &[u8]) -> Vec<Finding> {
+    let tags = tiff_ifd0_tags(input);
+    let mut findings = Vec::new();
+    if tags.contains(&0x8825) {
+        findings.push(Finding {
+            category: FindingCategory::Gps,
+            label: "TIFF tags include GPS location".into(),
+            size_bytes: input.len(),
+        });
+    } else if tags.iter().any(|t| TIFF_IDENTIFYING_TAGS.contains(t)) {
+        findings.push(Finding {
+            category: FindingCategory::Exif,
+            label: "TIFF tags include camera/software/authorship metadata".into(),
+            size_bytes: input.len(),
+        });
+    }
+    findings
 }
 
 #[cfg(test)]
@@ -806,5 +980,96 @@ mod tests {
         };
         let err = inspect(&input, &opts).unwrap_err();
         assert!(matches!(err, CleanError::InputTooLarge { max: 10, .. }));
+    }
+
+    fn base_gif(width: u32, height: u32) -> Vec<u8> {
+        let img: image::RgbaImage = image::ImageBuffer::from_fn(width, height, |x, y| {
+            image::Rgba([(x * 40) as u8, (y * 40) as u8, 100, 255])
+        });
+        let mut out = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut Cursor::new(&mut out), image::ImageFormat::Gif)
+            .unwrap();
+        out
+    }
+
+    /// Position of the first block (Extension Introducer or Image
+    /// Descriptor) after a real encoder's header + Logical Screen
+    /// Descriptor + optional Global Color Table — the correct splice point
+    /// for inserting a new, independent block.
+    fn gif_first_block_pos(data: &[u8]) -> usize {
+        let packed = data[10];
+        let mut pos = 13usize;
+        if packed & 0x80 != 0 {
+            let gct_size = 3usize * (1usize << (u32::from(packed & 0x07) + 1));
+            pos += gct_size;
+        }
+        pos
+    }
+
+    fn splice_gif_block(base: &[u8], block: &[u8]) -> Vec<u8> {
+        let insert_at = gif_first_block_pos(base);
+        let mut out = base[..insert_at].to_vec();
+        out.extend_from_slice(block);
+        out.extend_from_slice(&base[insert_at..]);
+        out
+    }
+
+    fn build_gif_comment_extension(text: &[u8]) -> Vec<u8> {
+        let mut out = vec![0x21, 0xFE];
+        for chunk in text.chunks(255) {
+            out.push(chunk.len() as u8);
+            out.extend_from_slice(chunk);
+        }
+        out.push(0);
+        out
+    }
+
+    #[test]
+    fn clean_gif_has_no_findings() {
+        let input = base_gif(4, 4);
+        let report = inspect(&input, &InspectOptions::default()).unwrap();
+        assert!(report.is_clean());
+    }
+
+    #[test]
+    fn detects_ai_generation_text_in_gif_comment() {
+        let comment = build_gif_comment_extension(b"Steps: 20, Sampler: Euler a, CFG scale: 7");
+        let input = splice_gif_block(&base_gif(4, 4), &comment);
+        let report = inspect(&input, &InspectOptions::default()).unwrap();
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.category == FindingCategory::AiGenerator));
+    }
+
+    #[test]
+    fn detects_unusual_gif_application_extension() {
+        let mut app_ext = vec![0x21, 0xFF, 11];
+        app_ext.extend_from_slice(b"WEIRDAPP123"); // exactly 11 bytes
+        app_ext.push(3);
+        app_ext.extend_from_slice(b"abc");
+        app_ext.push(0);
+        let input = splice_gif_block(&base_gif(4, 4), &app_ext);
+        let report = inspect(&input, &InspectOptions::default()).unwrap();
+        assert!(report
+            .findings
+            .iter()
+            .any(|f| f.label.contains("WEIRDAPP123")));
+    }
+
+    #[test]
+    fn inspect_tiff_detects_gps() {
+        let findings = inspect_tiff(&tiff_with_gps_pointer());
+        assert!(findings.iter().any(|f| f.category == FindingCategory::Gps));
+    }
+
+    #[test]
+    fn inspect_tiff_detects_identifying_tags() {
+        // tiff_without_gps() carries a DateTime tag (0x0132), which is on
+        // the identifying-tags list but is not GPS.
+        let findings = inspect_tiff(&tiff_without_gps());
+        assert!(findings.iter().any(|f| f.category == FindingCategory::Exif));
+        assert!(!findings.iter().any(|f| f.category == FindingCategory::Gps));
     }
 }

@@ -13,6 +13,9 @@ enum OutputFormatArg {
     Jpeg,
     Png,
     Webp,
+    Bmp,
+    Gif,
+    Tiff,
 }
 
 impl From<OutputFormatArg> for ImageFormat {
@@ -21,6 +24,9 @@ impl From<OutputFormatArg> for ImageFormat {
             OutputFormatArg::Jpeg => ImageFormat::Jpeg,
             OutputFormatArg::Png => ImageFormat::Png,
             OutputFormatArg::Webp => ImageFormat::WebP,
+            OutputFormatArg::Bmp => ImageFormat::Bmp,
+            OutputFormatArg::Gif => ImageFormat::Gif,
+            OutputFormatArg::Tiff => ImageFormat::Tiff,
         }
     }
 }

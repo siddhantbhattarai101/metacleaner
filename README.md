@@ -3,9 +3,9 @@
 A local, offline metadata cleaner and AI-tag remover for images, written in
 Rust. Strips EXIF, GPS, XMP, IPTC, C2PA content credentials, and AI-generator
 signatures (Stable Diffusion `tEXt`/`iTXt`/`zTXt` chunks, DALL-E/Midjourney/
-Adobe Firefly fingerprints) from JPEG, PNG, and WebP images, and can
-optionally reset the pixel-level fingerprint of the output so old copies
-can't be hash-matched back to the source file. A separate `inspect`
+Adobe Firefly fingerprints) from JPEG, PNG, WebP, BMP, GIF, and TIFF images,
+and can optionally reset the pixel-level fingerprint of the output so old
+copies can't be hash-matched back to the source file. A separate `inspect`
 subcommand reports what metadata is present in a file without modifying it.
 
 No network calls, no server upload — everything runs on your machine.
@@ -157,7 +157,19 @@ Google's SynthID, or signals a visual AI classifier looks for — is not
 metadata and can't be stripped this way. Treat this as a privacy/provenance
 tool, not a guarantee against AI-content detectors.
 
-Supported formats: JPEG, PNG, WebP. HEIC/AVIF and video are not yet supported.
+Supported formats: JPEG, PNG, WebP, BMP, GIF, TIFF. HEIC/AVIF and video are
+not yet supported.
+
+**Animated GIFs and multi-page TIFFs are refused outright, not silently
+truncated.** The `image` crate's public decoder API for both formats only
+exposes "decode the first frame/page" — there's no way to ask "is there
+more than one?" through it. Rather than quietly cleaning only page 1 of a
+scanned document or frame 1 of an animation and discarding the rest,
+`clean()` does its own bounds-checked structural scan first (GIF block
+walk / TIFF IFD-chain walk) and returns a clear `MultiFrameNotSupported`
+error if it finds more than one. `inspect` still works fine on these files
+(it only reports on the first frame/page, never discards anything since it
+doesn't write output).
 
 ## Testing
 
@@ -169,17 +181,20 @@ cargo test --workspace
 `parameters` tEXt chunk and assert it's absent from the cleaned output, among
 other checks (format conversion, unsupported-format rejection, fingerprint
 reset actually changing bytes, the decompression-bomb guard rejecting a PNG
-header that declares a 60,000x60,000 canvas, and `inspect()` correctly
-identifying GPS-bearing EXIF, C2PA/JUMBF segments, and Stable Diffusion
-parameters across both PNG and JPEG fixtures).
+header that declares a 60,000x60,000 canvas, a genuinely animated GIF and a
+multi-page TIFF both being refused rather than silently truncated, and
+`inspect()` correctly identifying GPS-bearing EXIF, C2PA/JUMBF segments,
+Stable Diffusion parameters, and GIF comment/application extensions across
+PNG, JPEG, GIF, and TIFF fixtures).
 
 ## Roadmap
 
 - `metacleaner-wasm`: thin `wasm-bindgen` wrapper around `metacleaner-core`
   for a browser-based, fully client-side UI (matches the original product
   brief: drag-and-drop, batch processing, nothing leaves the browser).
-- BMP/GIF/TIFF support (free — already in the `image` crate, just needs
-  `ImageFormat` variants wired up).
+- Animated GIF / multi-page TIFF support — clean each frame/page instead of
+  refusing the whole file (needs the multi-frame encode path, not just the
+  single-frame one `clean()` uses today).
 - HEIC/AVIF support.
 - Real C2PA manifest parsing via the `c2pa` crate. Today `inspect` flags
   *that* a JPEG APP11 segment or PNG `caBX` chunk is present (C2PA's known
