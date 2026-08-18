@@ -8,6 +8,8 @@ use metacleaner_core::{
     DEFAULT_MAX_DECODED_BYTES, DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_INPUT_BYTES,
 };
 
+mod serve;
+
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum OutputFormatArg {
     Jpeg,
@@ -47,6 +49,26 @@ enum Command {
     Clean(CleanArgs),
     /// Report what metadata is present, without modifying anything.
     Inspect(InspectArgs),
+    /// Run a local web UI (loopback-only by default) for drag-and-drop
+    /// inspect/clean, with nothing ever leaving this machine.
+    Serve(ServeArgs),
+}
+
+#[derive(Args, Debug)]
+struct ServeArgs {
+    /// Address to bind to. Loopback-only by default — change this only if
+    /// you understand that anyone who can reach this address can upload
+    /// and process files through it.
+    #[arg(long, default_value = "127.0.0.1")]
+    host: String,
+
+    /// Port to listen on.
+    #[arg(long, default_value_t = 7878)]
+    port: u16,
+
+    /// Don't automatically open a browser tab on startup.
+    #[arg(long)]
+    no_open: bool,
 }
 
 #[derive(Args, Debug)]
@@ -121,11 +143,28 @@ struct InspectArgs {
     guard: GuardArgs,
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
     match &cli.command {
         Command::Clean(args) => run_clean(args),
         Command::Inspect(args) => run_inspect(args),
+        Command::Serve(args) => run_serve(args).await,
+    }
+}
+
+async fn run_serve(args: &ServeArgs) -> ExitCode {
+    let config = serve::ServeConfig {
+        host: args.host.clone(),
+        port: args.port,
+        open_browser: !args.no_open,
+    };
+    match serve::run(config).await {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: web server failed: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 

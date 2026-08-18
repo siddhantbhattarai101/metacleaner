@@ -7,6 +7,8 @@ Adobe Firefly fingerprints) from JPEG, PNG, WebP, BMP, GIF, and TIFF images,
 and can optionally reset the pixel-level fingerprint of the output so old
 copies can't be hash-matched back to the source file. A separate `inspect`
 subcommand reports what metadata is present in a file without modifying it.
+A `serve` subcommand runs a local web UI (drag-and-drop, batch, download) at
+`http://127.0.0.1`, bound to loopback only.
 
 No network calls, no server upload — everything runs on your machine.
 
@@ -28,7 +30,10 @@ metacleaner/
 │   ├── metacleaner-core/   # pure in-memory library: bytes in -> clean bytes out
 │   │                       # no file or network I/O, so it's reusable from a
 │   │                       # future wasm32-unknown-unknown build for a browser UI
-│   └── metacleaner-cli/    # `metaclean` binary
+│   └── metacleaner-cli/    # `metaclean` binary (clean / inspect / serve)
+│       └── assets/         # embedded web UI (index.html/style.css/app.js),
+│                            # compiled into the binary via include_str! —
+│                            # no files to ship alongside it
 └── Cargo.toml              # workspace
 ```
 
@@ -115,6 +120,33 @@ cleaning one.
 Run `metaclean --help`, `metaclean clean --help`, or `metaclean inspect --help`
 for the full flag list.
 
+### `serve` — local web UI
+
+```bash
+# Starts on http://127.0.0.1:7878 and opens it in your default browser
+metaclean serve
+
+# Different port, don't auto-open a browser tab
+metaclean serve --port 9000 --no-open
+```
+
+Drag files onto the page (or pick them); each is inspected automatically on
+drop, showing findings inline. Adjust the fingerprint-reset/quality/format
+options, then "Clean & download all" cleans every file server-side (via the
+exact same `metacleaner-core` functions the CLI uses) and downloads each
+result through the browser.
+
+Binds to `127.0.0.1` (loopback) by default — nothing outside this machine
+can reach it. `--host` exists to override this, but only do so if you
+understand that anyone who can reach that address can then upload and
+process files through it. There's no authentication: this is designed to
+be a personal local tool, the same trust model as running a local Jupyter
+notebook or dev server, not a multi-user service.
+
+The HTML/CSS/JS are compiled into the `metaclean` binary itself
+(`include_str!`) — `serve` needs nothing on disk beyond the binary, which
+matters for shipping this as a single apt-installable package.
+
 ## Security: decompression-bomb guard
 
 `clean()` rejects oversized or maliciously-crafted input before doing any
@@ -189,9 +221,13 @@ PNG, JPEG, GIF, and TIFF fixtures).
 
 ## Roadmap
 
-- `metacleaner-wasm`: thin `wasm-bindgen` wrapper around `metacleaner-core`
-  for a browser-based, fully client-side UI (matches the original product
-  brief: drag-and-drop, batch processing, nothing leaves the browser).
+- Package as a `.deb` (via `cargo-deb`) so `apt install metacleaner` gives
+  you the `metaclean` binary — `clean`/`inspect` on the command line,
+  `metaclean serve` for the local web UI. This is the near-term next step.
+- Text/document format support (DOCX/PDF/EPUB/HTML/Markdown metadata,
+  invisible-Unicode stripping) — a second wave once the image toolset and
+  its web UI are solid, matching the fuller feature set of tools like
+  `watermarks-remover`.
 - Animated GIF / multi-page TIFF support — clean each frame/page instead of
   refusing the whole file (needs the multi-frame encode path, not just the
   single-frame one `clean()` uses today).
@@ -204,3 +240,7 @@ PNG, JPEG, GIF, and TIFF fixtures).
   and exact pixels while only dropping EXIF/XMP/C2PA segments, as an
   alternative to the current full re-encode for users who want zero
   quality/pixel change instead of a hash-busting fingerprint reset.
+- `metacleaner-wasm`: a `wasm-bindgen` wrapper around `metacleaner-core`
+  for a fully client-side, publicly-hostable web version (the `serve`
+  subcommand's local server covers the "apt-installable local tool" use
+  case; this would cover "deploy this as a public website" instead).
