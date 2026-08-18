@@ -239,6 +239,19 @@ input[type="range"] { width: 100%; }
   gap: 0.9rem;
 }
 
+#image-options,
+#text-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.9rem;
+}
+
+#text-options p.option-help {
+  margin: 0;
+  padding-top: 0.3rem;
+  border-top: 1px solid var(--border);
+}
+
 .toggle-row {
   display: flex;
   flex-wrap: wrap;

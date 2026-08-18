@@ -18,6 +18,11 @@ const optNoiseLevel = document.getElementById("opt-noise-level");
 const optQuality = document.getElementById("opt-quality");
 const optQualityVal = document.getElementById("opt-quality-val");
 const optFormat = document.getElementById("opt-format");
+const optStripZwj = document.getElementById("opt-strip-zwj");
+
+const imageOptionsEl = document.getElementById("image-options");
+const textOptionsEl = document.getElementById("text-options");
+const advancedDetailsEl = document.getElementById("advanced-details");
 
 // Plain-language noise-level choices, mapped to the underlying
 // strength/fraction knobs so nobody has to understand those directly.
@@ -168,6 +173,7 @@ async function runClean(id) {
   let endpoint = "/api/clean";
   if (entry.isText) {
     endpoint = "/api/clean-text";
+    form.append("strip_zero_width_joiner", optStripZwj.checked ? "true" : "false");
   } else {
     const noise = NOISE_LEVELS[optNoiseLevel.value] || NOISE_LEVELS.medium;
     form.append("enhance", optEnhance.checked ? "true" : "false");
@@ -232,6 +238,22 @@ function render() {
   const anyWorking = Array.from(entries.values()).some((e) => e.cleanState === "working");
   cleanAllBtn.disabled = entries.size === 0 || anyWorking;
   fileCountEl.textContent = entries.size > 0 ? `(${entries.size})` : "";
+  updateOptionsVisibility();
+}
+
+// Options adapt to what's actually in the file list: image controls
+// (enhance/upscale/fingerprint/format/quality) only make sense for images,
+// text controls only make sense for text files. Before anything is
+// dropped, default to showing the image options since that's the primary
+// use case.
+function updateOptionsVisibility() {
+  const all = Array.from(entries.values());
+  const hasImages = all.length === 0 || all.some((e) => !e.isText);
+  const hasText = all.some((e) => e.isText);
+
+  imageOptionsEl.hidden = !hasImages;
+  advancedDetailsEl.hidden = !hasImages;
+  textOptionsEl.hidden = !hasText;
 }
 
 function renderCard(entry) {

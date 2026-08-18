@@ -34,40 +34,53 @@
   <section id="options" class="options">
     <h2>Options</h2>
     <div class="options-simple">
-      <label class="toggle-row">
-        <input type="checkbox" id="opt-enhance">
-        <span class="toggle-row-text">
-          <strong>Enhance quality</strong>
-          <span class="option-help">Sharpens detail and evens out contrast. Off by default &mdash; only changes pixels if you turn it on.</span>
-        </span>
-      </label>
-      <label class="toggle-row">
-        <span class="toggle-row-label-only">
-          <strong>Upscale</strong>
-          <span id="upscale-help" class="option-help">Enlarges the image using high-quality resampling &mdash; sharper resize, doesn't invent detail that wasn't captured.</span>
-        </span>
-        <select id="opt-upscale-mode">
-          <option value="none">No upscale</option>
-          <option value="classical-2">2&times; size (resize)</option>
-          <option value="classical-4">4&times; size (resize)</option>
-          <option value="ai-4">AI 4&times; (HD upscale)</option>
-        </select>
-      </label>
-      <label class="toggle-row">
-        <input type="checkbox" id="opt-fingerprint">
-        <span class="toggle-row-text">
-          <strong>Also scramble the digital fingerprint</strong>
-          <span class="option-help">Adds invisible pixel noise so an old copy of this file can't be hash-matched back to your download. Optional &mdash; leave off for maximum quality.</span>
-        </span>
-      </label>
+      <div id="image-options">
+        <label class="toggle-row">
+          <input type="checkbox" id="opt-enhance">
+          <span class="toggle-row-text">
+            <strong>Enhance quality</strong>
+            <span class="option-help">Sharpens detail and evens out contrast. Off by default &mdash; only changes pixels if you turn it on.</span>
+          </span>
+        </label>
+        <label class="toggle-row">
+          <span class="toggle-row-label-only">
+            <strong>Upscale</strong>
+            <span id="upscale-help" class="option-help">Enlarges the image using high-quality resampling &mdash; sharper resize, doesn't invent detail that wasn't captured.</span>
+          </span>
+          <select id="opt-upscale-mode">
+            <option value="none">No upscale</option>
+            <option value="classical-2">2&times; size (resize)</option>
+            <option value="classical-4">4&times; size (resize)</option>
+            <option value="ai-4">AI 4&times; (HD upscale)</option>
+          </select>
+        </label>
+        <label class="toggle-row">
+          <input type="checkbox" id="opt-fingerprint">
+          <span class="toggle-row-text">
+            <strong>Also scramble the digital fingerprint</strong>
+            <span class="option-help">Adds invisible pixel noise so an old copy of this file can't be hash-matched back to your download. Optional &mdash; leave off for maximum quality.</span>
+          </span>
+        </label>
 
-      <div id="noise-level-row" class="nested-option" hidden>
-        <label for="opt-noise-level">How much noise?</label>
-        <select id="opt-noise-level">
-          <option value="light">Light &mdash; barely detectable</option>
-          <option value="medium" selected>Medium &mdash; recommended</option>
-          <option value="strong">Strong &mdash; more disruptive, still invisible to the eye</option>
-        </select>
+        <div id="noise-level-row" class="nested-option" hidden>
+          <label for="opt-noise-level">How much noise?</label>
+          <select id="opt-noise-level">
+            <option value="light">Light &mdash; barely detectable</option>
+            <option value="medium" selected>Medium &mdash; recommended</option>
+            <option value="strong">Strong &mdash; more disruptive, still invisible to the eye</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="text-options" hidden>
+        <label class="toggle-row">
+          <input type="checkbox" id="opt-strip-zwj">
+          <span class="toggle-row-text">
+            <strong>Also strip the zero-width joiner (U+200D)</strong>
+            <span class="option-help">Off by default &mdash; it's legitimate and common (it's what joins emoji into family/profession sequences). Only turn this on if you specifically need to defeat a watermarking scheme that uses it.</span>
+          </span>
+        </label>
+        <p class="option-help">Everything else invisible &mdash; zero-width spaces, bidi overrides, Unicode Tag block smuggling, variation-selector smuggling &mdash; is always stripped from text files.</p>
       </div>
     </div>
 
