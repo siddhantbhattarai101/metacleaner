@@ -64,9 +64,36 @@ metaclean --format webp photo.png
 
 # Control JPEG re-encode quality (1-100, default 92)
 metaclean --jpeg-quality 90 photo.jpg
+
+# Tune the decompression-bomb guard (defaults: 256 MB input, 12000px per side, 512 MB decoded)
+metaclean --max-input-mb 100 --max-dimension 8000 --max-decoded-mb 256 photo.jpg
 ```
 
 Run `metaclean --help` for the full flag list.
+
+## Security: decompression-bomb guard
+
+`clean()` rejects oversized or maliciously-crafted input before doing any
+expensive work, in three layers:
+
+1. **Raw byte size** — the CLI checks the file's size on disk (and the
+   library checks `input.len()`) against `max_input_bytes` before reading or
+   parsing anything.
+2. **Declared dimensions** — a file's header can claim any width/height it
+   wants regardless of how small the file actually is (e.g. a 65-byte PNG
+   declaring a 60,000x60,000 canvas, which would need ~14 GB to decode).
+   `metacleaner-core` reads each format's header via its own decoder, checks
+   the declared dimensions against `max_image_dimension` via `image::Limits`,
+   and rejects the file *before* allocating a pixel buffer.
+3. **Decoded allocation size** — `max_decoded_bytes` bounds how much memory
+   the decoder may allocate while reading pixel data, as a second, more
+   general backstop.
+
+All three are configurable via `CleanOptions` (library) or
+`--max-input-mb` / `--max-dimension` / `--max-decoded-mb` (CLI), and can be
+disabled individually by setting the corresponding `CleanOptions` field to
+`None` if you trust your input source and want to process unusually large
+legitimate images.
 
 ## What it removes
 
@@ -97,7 +124,8 @@ cargo test --workspace
 `metacleaner-core`'s tests build a PNG with a real Automatic1111-style
 `parameters` tEXt chunk and assert it's absent from the cleaned output, among
 other checks (format conversion, unsupported-format rejection, fingerprint
-reset actually changing bytes).
+reset actually changing bytes, and the decompression-bomb guard rejecting a
+PNG header that declares a 60,000x60,000 canvas).
 
 ## Roadmap
 

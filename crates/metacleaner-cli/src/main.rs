@@ -3,7 +3,10 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Parser, ValueEnum};
-use metacleaner_core::{clean, CleanError, CleanOptions, ImageFormat};
+use metacleaner_core::{
+    clean, CleanError, CleanOptions, ImageFormat, DEFAULT_MAX_DECODED_BYTES,
+    DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_INPUT_BYTES,
+};
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum OutputFormatArg {
@@ -59,10 +62,25 @@ struct Cli {
     /// Overwrite the input file in place instead of writing a new file.
     #[arg(long, conflicts_with = "out_dir")]
     in_place: bool,
+
+    /// Reject input files larger than this many megabytes, before reading them.
+    /// Guards against decompression-bomb-style attacks on untrusted input.
+    #[arg(long, default_value_t = DEFAULT_MAX_INPUT_BYTES / (1024 * 1024))]
+    max_input_mb: u64,
+
+    /// Reject images whose decoded width or height exceeds this many pixels.
+    #[arg(long, default_value_t = DEFAULT_MAX_IMAGE_DIMENSION)]
+    max_dimension: u32,
+
+    /// Reject images that would require decoding more than this many megabytes of pixel data.
+    #[arg(long, default_value_t = DEFAULT_MAX_DECODED_BYTES / (1024 * 1024))]
+    max_decoded_mb: u64,
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+
+    let max_input_bytes = cli.max_input_mb * 1024 * 1024;
 
     let opts = CleanOptions {
         reset_fingerprint: !cli.no_fingerprint_reset,
@@ -70,6 +88,9 @@ fn main() -> ExitCode {
         fingerprint_fraction: cli.fingerprint_fraction,
         jpeg_quality: cli.jpeg_quality,
         output_format: cli.format.map(Into::into),
+        max_input_bytes: Some(max_input_bytes),
+        max_image_dimension: Some(cli.max_dimension),
+        max_decoded_bytes: Some(cli.max_decoded_mb * 1024 * 1024),
     };
 
     if let Some(dir) = &cli.out_dir {
@@ -125,6 +146,18 @@ fn process_one(
     out_dir: Option<&Path>,
     in_place: bool,
 ) -> Result<(PathBuf, metacleaner_core::CleanReport), CliError> {
+    if let Some(max) = opts.max_input_bytes {
+        let size = fs::metadata(input_path)
+            .map_err(|e| CliError::Io(input_path.to_path_buf(), e))?
+            .len();
+        if size > max {
+            return Err(CliError::Clean(CleanError::InputTooLarge {
+                size: size as usize,
+                max,
+            }));
+        }
+    }
+
     let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
     let cleaned = clean(&bytes, opts).map_err(CliError::Clean)?;
 

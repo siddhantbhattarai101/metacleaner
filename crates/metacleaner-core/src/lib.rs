@@ -19,8 +19,24 @@
 
 use std::io::Cursor;
 
-use image::{DynamicImage, ImageEncoder};
+use image::{DynamicImage, ImageDecoder, ImageEncoder};
 use rand::Rng;
+
+/// Default cap on raw input size, in bytes, before any parsing is attempted.
+/// 256 MiB is far beyond any legitimate photo; rejecting oversized input
+/// outright avoids doing any decode work on it at all.
+pub const DEFAULT_MAX_INPUT_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Default cap on decoded pixel dimensions. 12000x12000 comfortably covers
+/// any real camera or generator output while still bounding a maliciously
+/// crafted file (e.g. a few-KB PNG whose IHDR claims an enormous canvas)
+/// from forcing a huge allocation.
+pub const DEFAULT_MAX_IMAGE_DIMENSION: u32 = 12_000;
+
+/// Default cap on the memory a decoder is allowed to allocate while reading
+/// pixel data — the actual decompression-bomb guard. Matches the `image`
+/// crate's own built-in default.
+pub const DEFAULT_MAX_DECODED_BYTES: u64 = 512 * 1024 * 1024;
 
 /// Supported image container formats.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,14 +52,6 @@ impl ImageFormat {
             ImageFormat::Jpeg => "jpg",
             ImageFormat::Png => "png",
             ImageFormat::WebP => "webp",
-        }
-    }
-
-    fn to_image_crate(self) -> image::ImageFormat {
-        match self {
-            ImageFormat::Jpeg => image::ImageFormat::Jpeg,
-            ImageFormat::Png => image::ImageFormat::Png,
-            ImageFormat::WebP => image::ImageFormat::WebP,
         }
     }
 
@@ -70,7 +78,9 @@ pub enum CleanError {
         "could not determine image format, or format is unsupported (supported: JPEG, PNG, WebP)"
     )]
     UnsupportedFormat,
-    #[error("failed to decode image: {0}")]
+    #[error("input is {size} bytes, which exceeds the {max}-byte limit")]
+    InputTooLarge { size: usize, max: u64 },
+    #[error("failed to decode image (this includes exceeding configured size/memory limits): {0}")]
     Decode(#[from] image::ImageError),
     #[error("failed to encode image: {0}")]
     Encode(String),
@@ -95,6 +105,21 @@ pub struct CleanOptions {
     /// input's own format (e.g. force PNG -> JPEG). `None` keeps the
     /// input format.
     pub output_format: Option<ImageFormat>,
+    /// Reject input larger than this many bytes before any parsing is
+    /// attempted. `None` disables the check. Defaults to
+    /// [`DEFAULT_MAX_INPUT_BYTES`].
+    pub max_input_bytes: Option<u64>,
+    /// Reject input whose decoded width or height exceeds this many pixels.
+    /// `None` disables the check. Defaults to
+    /// [`DEFAULT_MAX_IMAGE_DIMENSION`]. This is the primary
+    /// decompression-bomb guard: a tiny file can declare an enormous
+    /// canvas in its header, and without this check decoding it would
+    /// force a huge allocation before we ever see the real pixel count.
+    pub max_image_dimension: Option<u32>,
+    /// Reject input that would require the decoder to allocate more than
+    /// this many bytes while reading pixel data. `None` disables the
+    /// check. Defaults to [`DEFAULT_MAX_DECODED_BYTES`].
+    pub max_decoded_bytes: Option<u64>,
 }
 
 impl Default for CleanOptions {
@@ -105,6 +130,9 @@ impl Default for CleanOptions {
             fingerprint_fraction: 0.25,
             jpeg_quality: 92,
             output_format: None,
+            max_input_bytes: Some(DEFAULT_MAX_INPUT_BYTES),
+            max_image_dimension: Some(DEFAULT_MAX_IMAGE_DIMENSION),
+            max_decoded_bytes: Some(DEFAULT_MAX_DECODED_BYTES),
         }
     }
 }
@@ -129,10 +157,24 @@ pub struct CleanedImage {
 
 /// Strip all metadata from `input` and return the cleaned image bytes.
 pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanError> {
+    if let Some(max) = opts.max_input_bytes {
+        if input.len() as u64 > max {
+            return Err(CleanError::InputTooLarge {
+                size: input.len(),
+                max,
+            });
+        }
+    }
+
     let input_format = detect_format(input).ok_or(CleanError::UnsupportedFormat)?;
     let output_format = opts.output_format.unwrap_or(input_format);
 
-    let decoded = image::load_from_memory_with_format(input, input_format.to_image_crate())?;
+    let mut limits = image::Limits::no_limits();
+    limits.max_image_width = opts.max_image_dimension;
+    limits.max_image_height = opts.max_image_dimension;
+    limits.max_alloc = opts.max_decoded_bytes;
+
+    let decoded = decode_with_limits(input, input_format, limits)?;
     let width = decoded.width();
     let height = decoded.height();
 
@@ -191,6 +233,33 @@ pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanErr
         },
         bytes: out,
     })
+}
+
+/// Decode `input` with the given format, enforcing `limits` on decoded
+/// dimensions and allocation size before any large buffer is allocated.
+fn decode_with_limits(
+    input: &[u8],
+    format: ImageFormat,
+    limits: image::Limits,
+) -> Result<DynamicImage, CleanError> {
+    let cursor = Cursor::new(input);
+    match format {
+        ImageFormat::Jpeg => {
+            let mut decoder = image::codecs::jpeg::JpegDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            Ok(DynamicImage::from_decoder(decoder)?)
+        }
+        ImageFormat::Png => {
+            let mut decoder = image::codecs::png::PngDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            Ok(DynamicImage::from_decoder(decoder)?)
+        }
+        ImageFormat::WebP => {
+            let mut decoder = image::codecs::webp::WebPDecoder::new(cursor)?;
+            decoder.set_limits(limits)?;
+            Ok(DynamicImage::from_decoder(decoder)?)
+        }
+    }
 }
 
 /// Apply an invisible, randomized per-pixel perturbation to defeat
@@ -340,5 +409,72 @@ mod tests {
         let cleaned = clean(&input, &opts).expect("clean should succeed");
         assert_eq!(cleaned.report.output_format, ImageFormat::Jpeg);
         assert_eq!(detect_format(&cleaned.bytes), Some(ImageFormat::Jpeg));
+    }
+
+    #[test]
+    fn rejects_input_over_the_configured_byte_limit() {
+        let input = make_png_with_text_chunk();
+        let opts = CleanOptions {
+            max_input_bytes: Some(10),
+            ..Default::default()
+        };
+        let err = clean(&input, &opts).unwrap_err();
+        assert!(matches!(err, CleanError::InputTooLarge { max: 10, .. }));
+    }
+
+    fn png_chunk(kind: &[u8; 4], data: &[u8]) -> Vec<u8> {
+        let mut chunk = Vec::new();
+        chunk.extend_from_slice(&(data.len() as u32).to_be_bytes());
+        chunk.extend_from_slice(kind);
+        chunk.extend_from_slice(data);
+        let crc = crc32(&chunk[4..]);
+        chunk.extend_from_slice(&crc.to_be_bytes());
+        chunk
+    }
+
+    /// A well-formed PNG header declaring an enormous canvas, paired with a
+    /// tiny (and never-decoded) IDAT — exactly the shape of a
+    /// decompression-bomb attempt: a few hundred bytes on disk claiming a
+    /// canvas that would need gigabytes of RAM to decode.
+    fn make_png_with_huge_dimensions(width: u32, height: u32) -> Vec<u8> {
+        let mut ihdr_data = Vec::new();
+        ihdr_data.extend_from_slice(&width.to_be_bytes());
+        ihdr_data.extend_from_slice(&height.to_be_bytes());
+        ihdr_data.extend_from_slice(&[8, 6, 0, 0, 0]); // 8-bit RGBA, no interlace
+
+        let mut out = Vec::new();
+        out.extend_from_slice(&[137, 80, 78, 71, 13, 10, 26, 10]); // PNG signature
+        out.extend_from_slice(&png_chunk(b"IHDR", &ihdr_data));
+        out.extend_from_slice(&png_chunk(b"IDAT", &[0u8; 8])); // never reached
+        out.extend_from_slice(&png_chunk(b"IEND", &[]));
+        out
+    }
+
+    #[test]
+    fn rejects_decompression_bomb_dimensions() {
+        let input = make_png_with_huge_dimensions(60_000, 60_000);
+        let opts = CleanOptions {
+            max_image_dimension: Some(DEFAULT_MAX_IMAGE_DIMENSION),
+            ..Default::default()
+        };
+        let err = clean(&input, &opts).unwrap_err();
+        assert!(
+            matches!(err, CleanError::Decode(_)),
+            "expected a Decode(Limits) error, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn accepts_dimensions_within_the_configured_limit() {
+        // A genuine, fully-decodable 4x4 PNG — well within any sane limit.
+        let input = make_png_with_text_chunk();
+        let opts = CleanOptions {
+            max_image_dimension: Some(1000),
+            reset_fingerprint: false,
+            ..Default::default()
+        };
+        let cleaned = clean(&input, &opts).expect("4x4 is within the 1000px limit");
+        assert_eq!(cleaned.report.width, 4);
+        assert_eq!(cleaned.report.height, 4);
     }
 }
