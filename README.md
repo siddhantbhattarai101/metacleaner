@@ -29,6 +29,34 @@ whatever file type you drop.
 
 No network calls, no server upload — everything runs on your machine.
 
+## Install
+
+### Debian / Ubuntu (apt)
+
+```bash
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://siddhantbhattarai101.github.io/metacleaner/pubkey.gpg \
+  | sudo tee /etc/apt/keyrings/metacleaner.asc > /dev/null
+
+echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai101.github.io/metacleaner stable main" \
+  | sudo tee /etc/apt/sources.list.d/metacleaner.list
+
+sudo apt update
+sudo apt install metacleaner
+```
+
+This adds a dedicated apt source signed with a repo-specific GPG key (not a
+global `apt-key` entry) — standard practice for third-party apt
+repositories. The repo itself (`Packages`/`Release`/`InRelease`, GPG-signed)
+is published at <https://siddhantbhattarai101.github.io/metacleaner/> via
+GitHub Pages, built from the `.deb` this project's `cargo deb` produces (see
+[Package as a `.deb`](#package-as-a-deb) below).
+
+### From source
+
+See [Build](#build) below — `cargo build --release --workspace` or
+`cargo deb -p metacleaner-cli` if you'd rather build the `.deb` yourself.
+
 ## Why full decode/re-encode instead of parsing each metadata format?
 
 JPEG APPn segments, PNG ancillary chunks, and WebP RIFF metadata chunks are
@@ -356,10 +384,10 @@ preserved byte-for-byte.
 
 ## Roadmap
 
-- Publish the `.deb` to a real apt repository (or a GitHub Releases page)
-  so installing doesn't require a local `cargo deb` build — right now
-  `cargo deb -p metacleaner-cli` produces the package but you still have to
-  build it yourself first.
+- Automate apt-repo updates on release (currently a manual `cargo deb` +
+  publish step) — a GitHub Actions workflow that rebuilds `Packages`/
+  `Release`/`InRelease` and pushes a new `.deb` into `pool/main` on the
+  `gh-pages` branch whenever a version is tagged.
 - PDF `/Info` dictionary + XMP metadata stripping, and EPUB metadata
   stripping — remaining format coverage matching the fuller feature set of
   tools like `watermarks-remover`.
