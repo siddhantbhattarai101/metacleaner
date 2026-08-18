@@ -1,12 +1,16 @@
 "use strict";
 
 const dropZone = document.getElementById("drop-zone");
+const dropConfirm = document.getElementById("drop-confirm");
 const fileInput = document.getElementById("file-input");
 const fileListSection = document.getElementById("file-list-section");
 const fileListEl = document.getElementById("file-list");
+const fileCountEl = document.getElementById("file-count");
 const cleanAllBtn = document.getElementById("clean-all-btn");
+const clearAllBtn = document.getElementById("clear-all-btn");
 
 const optEnhance = document.getElementById("opt-enhance");
+const optUpscale = document.getElementById("opt-upscale");
 const optFingerprint = document.getElementById("opt-fingerprint");
 const noiseLevelRow = document.getElementById("noise-level-row");
 const optNoiseLevel = document.getElementById("opt-noise-level");
@@ -27,14 +31,30 @@ optFingerprint.addEventListener("change", () => {
   noiseLevelRow.hidden = !optFingerprint.checked;
 });
 
-/** @type {Map<string, {file: File, id: string, inspect: object|null, inspectError: string|null, cleanState: "idle"|"working"|"done"|"error", cleanError: string|null}>} */
+/** @type {Map<string, {file: File, id: string, inspect: object|null, inspectError: string|null, cleanState: "idle"|"working"|"done"|"error", cleanError: string|null, isNew: boolean}>} */
 const entries = new Map();
 let nextId = 0;
+let confirmTimer = null;
+
+function fileKey(file) {
+  return `${file.name}::${file.size}::${file.lastModified}`;
+}
 
 function addFiles(fileList) {
   const files = Array.from(fileList);
   if (files.length === 0) return;
+
+  const existingKeys = new Set(Array.from(entries.values()).map((e) => fileKey(e.file)));
+  let added = 0;
+  let duplicates = 0;
+  const newIds = [];
+
   for (const file of files) {
+    if (existingKeys.has(fileKey(file))) {
+      duplicates++;
+      continue;
+    }
+    existingKeys.add(fileKey(file));
     const id = `f${nextId++}`;
     entries.set(id, {
       file,
@@ -43,15 +63,56 @@ function addFiles(fileList) {
       inspectError: null,
       cleanState: "idle",
       cleanError: null,
+      isNew: true,
     });
+    newIds.push(id);
+    added++;
   }
+
+  showDropConfirm(added, duplicates);
+
+  if (added === 0) return;
+
   fileListSection.hidden = false;
   render();
-  for (const [id, entry] of entries) {
-    if (entry.inspect === null && entry.inspectError === null) {
-      runInspect(id);
-    }
+  fileListSection.scrollIntoView({ behavior: "smooth", block: "nearest" });
+
+  for (const id of newIds) {
+    runInspect(id);
   }
+
+  // Drop the "just added" highlight after it's had a moment to be seen.
+  setTimeout(() => {
+    for (const id of newIds) {
+      const entry = entries.get(id);
+      if (entry) entry.isNew = false;
+    }
+    render();
+  }, 2000);
+}
+
+function showDropConfirm(added, duplicates) {
+  if (confirmTimer) clearTimeout(confirmTimer);
+  let message;
+  if (added > 0 && duplicates > 0) {
+    message = `✓ Added ${added} image${added === 1 ? "" : "s"} (${duplicates} already in the list)`;
+  } else if (added > 0) {
+    message = `✓ Added ${added} image${added === 1 ? "" : "s"} — see below`;
+  } else {
+    message = `Already in the list below — nothing new added`;
+  }
+  dropConfirm.textContent = message;
+  dropConfirm.hidden = false;
+  confirmTimer = setTimeout(() => {
+    dropConfirm.hidden = true;
+  }, 4000);
+}
+
+function clearAll() {
+  entries.clear();
+  fileListSection.hidden = true;
+  fileListEl.innerHTML = "";
+  render();
 }
 
 async function runInspect(id) {
@@ -89,6 +150,7 @@ async function runClean(id) {
   form.append("fingerprint_strength", String(noise.strength));
   form.append("fingerprint_fraction", String(noise.fraction));
   form.append("jpeg_quality", optQuality.value);
+  form.append("upscale", optUpscale.value);
   if (optFormat.value) form.append("format", optFormat.value);
 
   try {
@@ -138,11 +200,12 @@ function render() {
   }
   const anyWorking = Array.from(entries.values()).some((e) => e.cleanState === "working");
   cleanAllBtn.disabled = entries.size === 0 || anyWorking;
+  fileCountEl.textContent = entries.size > 0 ? `(${entries.size})` : "";
 }
 
 function renderCard(entry) {
   const card = document.createElement("div");
-  card.className = "file-card";
+  card.className = entry.isNew ? "file-card file-card-new" : "file-card";
 
   const header = document.createElement("div");
   header.className = "file-card-header";
@@ -243,3 +306,5 @@ fileInput.addEventListener("change", () => {
 cleanAllBtn.addEventListener("click", () => {
   for (const id of entries.keys()) runClean(id);
 });
+
+clearAllBtn.addEventListener("click", clearAll);

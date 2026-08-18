@@ -119,6 +119,12 @@ struct CleanArgs {
     #[arg(long)]
     enhance: bool,
 
+    /// Upscale by this factor (e.g. 2.0 doubles each side) using Lanczos3
+    /// resampling before any other processing. Classical resampling, not
+    /// AI super-resolution — smooths existing pixels, doesn't invent detail.
+    #[arg(long)]
+    upscale: Option<f32>,
+
     /// Overwrite the input file in place instead of writing a new file.
     #[arg(long, conflicts_with = "out_dir")]
     in_place: bool,
@@ -185,6 +191,7 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
         max_image_dimension: Some(args.guard.max_dimension),
         max_decoded_bytes: Some(args.max_decoded_mb * 1024 * 1024),
         enhance: args.enhance,
+        upscale_factor: args.upscale,
     };
 
     if let Some(dir) = &args.out_dir {

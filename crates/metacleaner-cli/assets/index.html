@@ -20,6 +20,7 @@
       <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,.tif,.tiff">
     </label>
     <p class="hint">JPEG, PNG, WebP, BMP, GIF, TIFF &middot; each file is inspected automatically on drop</p>
+    <p id="drop-confirm" class="drop-confirm" hidden></p>
   </section>
 
   <section id="options" class="options">
@@ -31,6 +32,17 @@
           <strong>Enhance quality</strong>
           <span class="option-help">Sharpens detail and evens out contrast. Off by default &mdash; only changes pixels if you turn it on.</span>
         </span>
+      </label>
+      <label class="toggle-row">
+        <span class="toggle-row-label-only">
+          <strong>Upscale</strong>
+          <span class="option-help">Enlarges the image using high-quality resampling. Sharper resize, not AI &mdash; it can't invent detail that wasn't captured.</span>
+        </span>
+        <select id="opt-upscale">
+          <option value="1">No upscale</option>
+          <option value="2">2&times; size</option>
+          <option value="4">4&times; size</option>
+        </select>
       </label>
       <label class="toggle-row">
         <input type="checkbox" id="opt-fingerprint">
@@ -74,8 +86,11 @@
 
   <section id="file-list-section" class="file-list-section" hidden>
     <div class="file-list-header">
-      <h2>Files</h2>
-      <button id="clean-all-btn" class="primary-btn">Clean &amp; download all</button>
+      <h2>Files <span id="file-count" class="file-count"></span></h2>
+      <div class="file-list-actions">
+        <button id="clear-all-btn" class="secondary-btn">Clear all</button>
+        <button id="clean-all-btn" class="primary-btn">Clean &amp; download all</button>
+      </div>
     </div>
     <div id="file-list" class="file-list"></div>
   </section>

@@ -106,6 +106,8 @@ pub enum CleanError {
     Decode(#[from] image::ImageError),
     #[error("failed to encode image: {0}")]
     Encode(String),
+    #[error("upscaling to {width}x{height} exceeds the {max}px-per-side limit")]
+    UpscaleTooLarge { width: u32, height: u32, max: u32 },
 }
 
 /// Options controlling how an image is cleaned.
@@ -148,6 +150,14 @@ pub struct CleanOptions {
     /// be an explicit choice, not a side effect of cleaning metadata. Runs
     /// before `reset_fingerprint`'s noise so sharpening doesn't amplify it.
     pub enhance: bool,
+    /// Resize the image up by this factor (e.g. `2.0` doubles each side)
+    /// using Lanczos3 resampling before any other processing. `None` or
+    /// `Some(x) where x <= 1.0` leaves dimensions unchanged. This is
+    /// classical resampling, not AI super-resolution: it can only smooth
+    /// and redistribute pixels that already exist, never invent detail
+    /// that wasn't captured — faithful to the original in a way generative
+    /// upscaling isn't.
+    pub upscale_factor: Option<f32>,
 }
 
 impl Default for CleanOptions {
@@ -162,6 +172,7 @@ impl Default for CleanOptions {
             max_image_dimension: Some(DEFAULT_MAX_IMAGE_DIMENSION),
             max_decoded_bytes: Some(DEFAULT_MAX_DECODED_BYTES),
             enhance: false,
+            upscale_factor: None,
         }
     }
 }
@@ -226,10 +237,33 @@ pub fn clean(input: &[u8], opts: &CleanOptions) -> Result<CleanedImage, CleanErr
     limits.max_alloc = opts.max_decoded_bytes;
 
     let decoded = decode_with_limits(input, input_format, limits)?;
-    let width = decoded.width();
-    let height = decoded.height();
-
     let mut rgba = decoded.into_rgba8();
+
+    if let Some(factor) = opts.upscale_factor {
+        if factor > 1.0 {
+            let new_width = (rgba.width() as f32 * factor).round() as u32;
+            let new_height = (rgba.height() as f32 * factor).round() as u32;
+            if let Some(max) = opts.max_image_dimension {
+                if new_width > max || new_height > max {
+                    return Err(CleanError::UpscaleTooLarge {
+                        width: new_width,
+                        height: new_height,
+                        max,
+                    });
+                }
+            }
+            rgba = image::imageops::resize(
+                &rgba,
+                new_width.max(1),
+                new_height.max(1),
+                image::imageops::FilterType::Lanczos3,
+            );
+        }
+    }
+
+    let width = rgba.width();
+    let height = rgba.height();
+
     if opts.enhance {
         // Before the fingerprint-reset noise, not after: sharpening would
         // otherwise amplify that noise instead of leaving it invisible.
@@ -800,5 +834,46 @@ mod tests {
         ifd0.extend_from_slice(&4u32.to_le_bytes());
         ifd0.extend_from_slice(&0u32.to_le_bytes()); // next IFD offset: none
         assert!(!tiff_has_multiple_pages(&ifd0));
+    }
+
+    #[test]
+    fn upscale_factor_multiplies_dimensions() {
+        let input = encode(&tiny_rgba_image(), image::ImageFormat::Png);
+        let opts = CleanOptions {
+            upscale_factor: Some(3.0),
+            reset_fingerprint: false,
+            ..Default::default()
+        };
+        let cleaned = clean(&input, &opts).expect("upscale should succeed");
+        assert_eq!(cleaned.report.width, 12);
+        assert_eq!(cleaned.report.height, 12);
+    }
+
+    #[test]
+    fn upscale_factor_of_one_or_less_is_a_no_op() {
+        let input = encode(&tiny_rgba_image(), image::ImageFormat::Png);
+        let opts = CleanOptions {
+            upscale_factor: Some(1.0),
+            reset_fingerprint: false,
+            ..Default::default()
+        };
+        let cleaned = clean(&input, &opts).expect("clean should succeed");
+        assert_eq!(cleaned.report.width, 4);
+        assert_eq!(cleaned.report.height, 4);
+    }
+
+    #[test]
+    fn rejects_upscale_beyond_the_dimension_limit() {
+        let input = encode(&tiny_rgba_image(), image::ImageFormat::Png);
+        let opts = CleanOptions {
+            upscale_factor: Some(10.0),
+            max_image_dimension: Some(20),
+            ..Default::default()
+        };
+        let err = clean(&input, &opts).unwrap_err();
+        assert!(
+            matches!(err, CleanError::UpscaleTooLarge { max: 20, .. }),
+            "expected UpscaleTooLarge, got {err:?}"
+        );
     }
 }

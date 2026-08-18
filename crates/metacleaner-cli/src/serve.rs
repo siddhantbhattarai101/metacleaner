@@ -234,6 +234,12 @@ fn options_from_fields(fields: &HashMap<String, String>) -> Result<CleanOptions,
     if let Some(v) = fields.get("enhance") {
         opts.enhance = v == "true";
     }
+    if let Some(v) = fields.get("upscale") {
+        let factor: f32 = v.parse().map_err(|_| "invalid upscale".to_string())?;
+        if factor > 1.0 {
+            opts.upscale_factor = Some(factor);
+        }
+    }
     if let Some(v) = fields.get("format") {
         opts.output_format = Some(match v.as_str() {
             "jpeg" => ImageFormat::Jpeg,

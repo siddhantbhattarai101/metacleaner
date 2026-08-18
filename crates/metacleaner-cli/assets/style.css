@@ -92,6 +92,19 @@ main {
   margin-top: 0.75rem;
 }
 
+.drop-confirm {
+  margin: 0.75rem 0 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  color: var(--ok-text);
+  animation: fade-in 0.2s ease;
+}
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
 .file-picker {
   display: inline-block;
   padding: 0.55rem 1.1rem;
@@ -161,6 +174,16 @@ input[type="range"] { width: 100%; }
   font-weight: 600;
 }
 
+.toggle-row-label-only {
+  flex: 1;
+  cursor: default;
+}
+
+.toggle-row select {
+  flex-shrink: 0;
+  align-self: center;
+}
+
 .option-help {
   display: block;
   color: var(--text-muted);
@@ -220,6 +243,17 @@ select {
   align-items: center;
 }
 
+.file-count {
+  color: var(--text-muted);
+  font-weight: 400;
+  font-size: 0.85rem;
+}
+
+.file-list-actions {
+  display: flex;
+  gap: 0.6rem;
+}
+
 .primary-btn {
   background: var(--accent);
   color: var(--accent-text);
@@ -233,6 +267,19 @@ select {
 
 .primary-btn:disabled { opacity: 0.5; cursor: not-allowed; }
 
+.secondary-btn {
+  background: transparent;
+  color: var(--text-muted);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.55rem 1.1rem;
+  font-weight: 600;
+  font-size: 0.88rem;
+  cursor: pointer;
+}
+
+.secondary-btn:hover { color: var(--text); border-color: var(--text-muted); }
+
 .file-list { display: flex; flex-direction: column; gap: 0.75rem; }
 
 .file-card {
@@ -240,6 +287,12 @@ select {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 1rem 1.25rem;
+  transition: background 0.6s ease, border-color 0.6s ease;
+}
+
+.file-card-new {
+  background: color-mix(in srgb, var(--accent) 6%, var(--surface));
+  border-color: var(--accent);
 }
 
 .file-card-header {
