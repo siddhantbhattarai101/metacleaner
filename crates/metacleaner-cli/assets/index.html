@@ -25,9 +25,9 @@
     <p><strong>Drop images, text, or office files here</strong> or</p>
     <label class="file-picker">
       Choose files
-      <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,.tif,.tiff,.txt,.md,.markdown,.text,.docx,.xlsx,.pptx">
+      <input type="file" id="file-input" multiple accept=".jpg,.jpeg,.png,.webp,.bmp,.gif,.tif,.tiff,.txt,.md,.markdown,.text,.html,.htm,.docx,.xlsx,.pptx">
     </label>
-    <p class="hint">Images: JPEG, PNG, WebP, BMP, GIF, TIFF &middot; Text: .txt, .md &middot; Office: .docx, .xlsx, .pptx &middot; each file is inspected automatically on drop</p>
+    <p class="hint">Images: JPEG, PNG, WebP, BMP, GIF, TIFF &middot; Text: .txt, .md, .html &middot; Office: .docx, .xlsx, .pptx &middot; each file is inspected automatically on drop</p>
     <p id="drop-confirm" class="drop-confirm" hidden></p>
   </section>
 
@@ -81,7 +81,7 @@
             <span class="option-help">Off by default &mdash; it's legitimate and common (it's what joins emoji into family/profession sequences). Only turn this on if you specifically need to defeat a watermarking scheme that uses it.</span>
           </span>
         </label>
-        <p class="option-help">Everything else invisible &mdash; zero-width spaces, bidi overrides, Unicode Tag block smuggling, variation-selector smuggling &mdash; is always stripped from text files.</p>
+        <p class="option-help">Everything else invisible &mdash; zero-width spaces, bidi overrides, Unicode Tag block smuggling, variation-selector smuggling &mdash; is always stripped from text files. Markdown frontmatter keys (author, generator, etc.) and, for HTML files, identifying &lt;meta&gt; tags and comments are also always stripped.</p>
       </div>
 
       <div id="doc-options" hidden>

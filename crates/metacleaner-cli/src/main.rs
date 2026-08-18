@@ -52,9 +52,12 @@ enum Command {
     Inspect(InspectArgs),
     /// Strip invisible-Unicode steganography (zero-width chars, bidi
     /// overrides, Unicode Tag block, variation-selector smuggling) from
-    /// plain text files (destructive: writes cleaned output).
+    /// plain text files; also strips AI-key Markdown frontmatter (.md) and
+    /// identifying <meta> tags / comments (.html/.htm) (destructive:
+    /// writes cleaned output).
     CleanText(CleanTextArgs),
-    /// Report what invisible/steganography-relevant characters are
+    /// Report what invisible/steganography-relevant characters (and, for
+    /// .md/.html files, frontmatter keys / meta tags / comments) are
     /// present in a text file, without modifying anything.
     InspectText(InspectTextArgs),
     /// Strip identifying metadata (author, company, custom tracking
@@ -577,7 +580,7 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
 
     for input_path in &args.inputs {
         match process_text_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
-            Ok((out_path, report, frontmatter_removed)) => {
+            Ok((out_path, report, frontmatter_removed, html_removed)) => {
                 if args.json {
                     json_results.push(serde_json::json!({
                         "file": input_path.display().to_string(),
@@ -591,6 +594,10 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
                             "count": f.count,
                         })).collect::<Vec<_>>(),
                         "frontmatter_keys_removed": frontmatter_removed.iter().map(|f| f.key.clone()).collect::<Vec<_>>(),
+                        "html_findings_removed": html_removed.iter().map(|f| serde_json::json!({
+                            "kind": f.kind.as_str(),
+                            "label": f.label,
+                        })).collect::<Vec<_>>(),
                     }));
                 } else {
                     let fm_note = if frontmatter_removed.is_empty() {
@@ -605,14 +612,29 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
                                 .join(", ")
                         )
                     };
+                    let html_note = if html_removed.is_empty() {
+                        String::new()
+                    } else {
+                        let (meta_count, comment_count) =
+                            html_removed
+                                .iter()
+                                .fold((0usize, 0usize), |(m, c), f| match f.kind {
+                                    metacleaner_text::HtmlFindingKind::Meta => (m + 1, c),
+                                    metacleaner_text::HtmlFindingKind::Comment => (m, c + 1),
+                                });
+                        format!(
+                            ", HTML: {meta_count} meta tag(s), {comment_count} comment(s) removed"
+                        )
+                    };
                     println!(
-                        "ok   {} -> {} [{} -> {} chars, {} removed{}]",
+                        "ok   {} -> {} [{} -> {} chars, {} removed{}{}]",
                         input_path.display(),
                         out_path.display(),
                         report.chars_in,
                         report.chars_out,
                         report.chars_in - report.chars_out,
                         fm_note,
+                        html_note,
                     );
                 }
             }
@@ -654,6 +676,13 @@ fn is_markdown(path: &Path) -> bool {
     )
 }
 
+fn is_html(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(str::to_lowercase),
+        Some(ext) if ext == "html" || ext == "htm"
+    )
+}
+
 #[allow(clippy::type_complexity)]
 fn process_text_one(
     input_path: &Path,
@@ -665,6 +694,7 @@ fn process_text_one(
         PathBuf,
         metacleaner_text::CleanTextReport,
         Vec<metacleaner_text::FrontmatterFinding>,
+        Vec<metacleaner_text::HtmlFinding>,
     ),
     CliError,
 > {
@@ -679,6 +709,13 @@ fn process_text_one(
         (text, Vec::new())
     };
 
+    let (text, html_removed) = if is_html(input_path) {
+        let (stripped, html_report) = metacleaner_text::strip_html(&text);
+        (stripped, html_report.findings)
+    } else {
+        (text, Vec::new())
+    };
+
     let (cleaned, report) = metacleaner_text::clean_text(&text, opts);
 
     let out_path = if in_place {
@@ -688,7 +725,7 @@ fn process_text_one(
     };
 
     fs::write(&out_path, cleaned.as_bytes()).map_err(|e| CliError::Io(out_path.clone(), e))?;
-    Ok((out_path, report, frontmatter_removed))
+    Ok((out_path, report, frontmatter_removed, html_removed))
 }
 
 fn text_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
@@ -715,8 +752,8 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
 
     for input_path in &args.inputs {
         match inspect_text_one(input_path) {
-            Ok((report, fm_report)) => {
-                if !report.is_clean() || !fm_report.is_clean() {
+            Ok((report, fm_report, html_report)) => {
+                if !report.is_clean() || !fm_report.is_clean() || !html_report.is_clean() {
                     any_findings = true;
                 }
                 if args.json {
@@ -724,7 +761,7 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                         "file": input_path.display().to_string(),
                         "ok": true,
                         "char_count": report.char_count,
-                        "clean": report.is_clean() && fm_report.is_clean(),
+                        "clean": report.is_clean() && fm_report.is_clean() && html_report.is_clean(),
                         "findings": report.findings.iter().map(|f| serde_json::json!({
                             "category": f.category.as_str(),
                             "codepoint": format!("U+{:04X}", f.codepoint),
@@ -734,10 +771,15 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                             "key": f.key,
                             "value": f.value,
                         })).collect::<Vec<_>>(),
+                        "html_findings": html_report.findings.iter().map(|f| serde_json::json!({
+                            "kind": f.kind.as_str(),
+                            "label": f.label,
+                            "value": f.value,
+                        })).collect::<Vec<_>>(),
                     }));
                 } else {
                     println!("{}  [{} chars]", input_path.display(), report.char_count);
-                    if report.is_clean() && fm_report.is_clean() {
+                    if report.is_clean() && fm_report.is_clean() && html_report.is_clean() {
                         println!("  no invisible/steganography-relevant characters found");
                     } else {
                         for finding in &report.findings {
@@ -748,6 +790,14 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                         }
                         for finding in &fm_report.removed {
                             println!("  [frontmatter] {} = {}", finding.key, finding.value);
+                        }
+                        for finding in &html_report.findings {
+                            println!(
+                                "  [{}] {} = {}",
+                                finding.kind.as_str(),
+                                finding.label,
+                                finding.value
+                            );
                         }
                     }
                 }
@@ -784,6 +834,7 @@ fn inspect_text_one(
     (
         metacleaner_text::InspectTextReport,
         metacleaner_text::FrontmatterReport,
+        metacleaner_text::HtmlReport,
     ),
     CliError,
 > {
@@ -798,7 +849,16 @@ fn inspect_text_one(
             removed: Vec::new(),
         }
     };
-    Ok((metacleaner_text::inspect_text(&text), fm_report))
+    let html_report = if is_html(input_path) {
+        metacleaner_text::inspect_html(&text)
+    } else {
+        metacleaner_text::HtmlReport::default()
+    };
+    Ok((
+        metacleaner_text::inspect_text(&text),
+        fm_report,
+        html_report,
+    ))
 }
 
 fn run_clean_doc(args: &CleanDocArgs) -> ExitCode {

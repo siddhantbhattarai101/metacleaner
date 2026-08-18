@@ -1,14 +1,31 @@
 # metacleaner
 
-A local, offline metadata cleaner and AI-tag remover for images, written in
-Rust. Strips EXIF, GPS, XMP, IPTC, C2PA content credentials, and AI-generator
-signatures (Stable Diffusion `tEXt`/`iTXt`/`zTXt` chunks, DALL-E/Midjourney/
-Adobe Firefly fingerprints) from JPEG, PNG, WebP, BMP, GIF, and TIFF images,
-and can optionally reset the pixel-level fingerprint of the output so old
-copies can't be hash-matched back to the source file. A separate `inspect`
-subcommand reports what metadata is present in a file without modifying it.
-A `serve` subcommand runs a local web UI (drag-and-drop, batch, download) at
-`http://127.0.0.1`, bound to loopback only.
+A local, offline metadata cleaner and AI-tag remover, written in Rust, for
+images, plain text/Markdown, HTML, and Office documents.
+
+- **Images** (JPEG, PNG, WebP, BMP, GIF, TIFF): strips EXIF, GPS, XMP, IPTC,
+  C2PA content credentials, and AI-generator signatures (Stable Diffusion
+  `tEXt`/`iTXt`/`zTXt` chunks, DALL-E/Midjourney/Adobe Firefly fingerprints),
+  and can optionally reset the pixel-level fingerprint of the output so old
+  copies can't be hash-matched back to the source file. Also does classical
+  (Lanczos3) and real AI (Real-ESRGAN, bundled, via ONNX Runtime)
+  super-resolution upscaling.
+- **Text/Markdown** (`.txt`/`.md`): strips invisible-Unicode steganography
+  (zero-width characters, bidi overrides, Unicode Tag block smuggling,
+  variation-selector smuggling) and, for `.md`, AI/tool-identifying
+  frontmatter keys (`author`, `generator`, etc.).
+- **HTML** (`.html`/`.htm`): strips identifying `<meta>` tags (`generator`,
+  `author`, `dc.creator`, ...) and non-conditional comments — the invisible-
+  Unicode pass above applies here too.
+- **Office documents** (`.docx`/`.xlsx`/`.pptx`): strips author, company,
+  last-modified-by, and custom tracking properties from `docProps/*.xml`,
+  leaving document content byte-for-byte untouched.
+
+A separate `inspect` (and per-format `inspect-text`/`inspect-doc`)
+subcommand reports what's present in a file without modifying it. A `serve`
+subcommand runs a local web UI (drag-and-drop, batch, download) at
+`http://127.0.0.1`, bound to loopback only, with options that adapt to
+whatever file type you drop.
 
 No network calls, no server upload — everything runs on your machine.
 
@@ -27,10 +44,20 @@ is dropped by construction — including formats this tool has never heard of.
 ```
 metacleaner/
 ├── crates/
-│   ├── metacleaner-core/   # pure in-memory library: bytes in -> clean bytes out
-│   │                       # no file or network I/O, so it's reusable from a
-│   │                       # future wasm32-unknown-unknown build for a browser UI
-│   └── metacleaner-cli/    # `metaclean` binary (clean / inspect / serve)
+│   ├── metacleaner-core/   # image clean/inspect: pure in-memory library,
+│   │                       # bytes in -> clean bytes out, no file or network
+│   │                       # I/O, so it's reusable from a future
+│   │                       # wasm32-unknown-unknown build for a browser UI
+│   ├── metacleaner-ai/     # real AI super-resolution (Real-ESRGAN via ONNX
+│   │   └── models/         # Runtime); bundled model weights, own crate so
+│   │                       # metacleaner-core stays dependency-light
+│   ├── metacleaner-text/   # invisible-Unicode stripping, Markdown
+│   │                       # frontmatter, HTML <meta>/comment stripping —
+│   │                       # dependency-free hand-rolled scanners
+│   ├── metacleaner-docs/   # OOXML (DOCX/XLSX/PPTX) metadata stripping
+│   │                       # (zip + quick-xml)
+│   └── metacleaner-cli/    # `metaclean` binary (clean / inspect / clean-text
+│       │                   # / inspect-text / clean-doc / inspect-doc / serve)
 │       └── assets/         # embedded web UI (index.html/style.css/app.js),
 │                            # compiled into the binary via include_str! —
 │                            # no files to ship alongside it
@@ -46,10 +73,11 @@ cargo build --release --workspace
 
 ## Usage
 
-`metaclean` has two subcommands: `inspect` (read-only — report what
-metadata is present) and `clean` (destructive — strip it and write output).
-Run `metaclean inspect photo.jpg` first if you want to know what's in a file
-before deciding to clean it.
+`metaclean` has a read-only/destructive pair of subcommands per file type:
+`inspect`/`clean` for images, `inspect-text`/`clean-text` for `.txt`/`.md`/
+`.html`/`.htm`, and `inspect-doc`/`clean-doc` for `.docx`/`.xlsx`/`.pptx`.
+Run the `inspect*` variant first if you want to know what's in a file before
+deciding to clean it.
 
 ### `inspect` — report what's there, without touching the file
 
@@ -105,6 +133,16 @@ metaclean clean --format webp photo.png
 # Control JPEG re-encode quality (1-100, default 92)
 metaclean clean --jpeg-quality 90 photo.jpg
 
+# Classical (Lanczos3) upscale — sharper resize, doesn't invent detail
+metaclean clean --upscale 2.0 photo.jpg
+
+# Real AI super-resolution (Real-ESRGAN, bundled model) — hallucinates
+# plausible detail; meant for small/low-res images, capped at 1600px input
+metaclean clean --ai-upscale photo.jpg
+
+# Classical (non-AI) quality enhancement: auto-contrast + unsharp-mask
+metaclean clean --enhance photo.jpg
+
 # Machine-readable JSON output
 metaclean clean --json *.jpg
 
@@ -120,6 +158,47 @@ cleaning one.
 Run `metaclean --help`, `metaclean clean --help`, or `metaclean inspect --help`
 for the full flag list.
 
+### `inspect-text` / `clean-text` — text, Markdown, HTML
+
+```bash
+# Report invisible characters / frontmatter keys / meta+comments present
+metaclean inspect-text notes.md page.html
+
+# Strip them (writes notes-clean.md alongside the original)
+metaclean clean-text notes.md page.html
+
+# Also strip the zero-width joiner (off by default — it's what joins emoji
+# into family/profession sequences, so it's kept unless you need it gone)
+metaclean clean-text --strip-zero-width-joiner notes.md
+```
+
+For `.md` files, AI/tool-identifying frontmatter keys (`author`, `creator`,
+`generator`, `model`, `prompt`, ...) are removed from the YAML frontmatter
+block; every other key (`title`, `date`, `tags`, ...) is left untouched,
+since frontmatter is often functionally required by a site generator, not
+pure metadata. For `.html`/`.htm` files, identifying `<meta>` tags
+(`generator`, `author`, `dc.creator`, ...) and non-conditional HTML comments
+are removed; functional meta (`charset`, `viewport`, ...) and IE conditional
+comments (`<!--[if IE]>...<![endif]-->`) are left alone. Every other
+invisible/steganography-relevant character is always stripped from every
+text file, regardless of extension.
+
+### `inspect-doc` / `clean-doc` — DOCX, XLSX, PPTX
+
+```bash
+# Report identifying metadata present (author, company, custom properties)
+metaclean inspect-doc report.docx
+
+# Strip it (document content is untouched, byte-for-byte)
+metaclean clean-doc report.docx budget.xlsx slides.pptx
+```
+
+All three OOXML formats share the same `docProps/core.xml`/`app.xml`/
+`custom.xml` metadata parts, which is where author/company/last-modified-by/
+custom tracking properties live; `clean-doc` blanks the text nodes in those
+parts via a streaming XML rewrite while every other zip entry — including
+the actual document content — is copied through unchanged.
+
 ### `serve` — local web UI
 
 ```bash
@@ -130,11 +209,15 @@ metaclean serve
 metaclean serve --port 9000 --no-open
 ```
 
-Drag files onto the page (or pick them); each is inspected automatically on
-drop, showing findings inline. Adjust the fingerprint-reset/quality/format
-options, then "Clean & download all" cleans every file server-side (via the
-exact same `metacleaner-core` functions the CLI uses) and downloads each
-result through the browser.
+Drag files onto the page (or pick them) — images, text/Markdown/HTML, and
+Office documents can all be mixed in the same batch. Each file is inspected
+automatically on drop, showing findings inline, and the Options panel
+adapts to show only what's relevant to the file types actually present
+(image options, text options, or a doc-options note — Office documents have
+nothing to configure, everything identifying is always stripped). Then
+"Clean & download all" cleans every file server-side (via the same
+`metacleaner-core`/`metacleaner-text`/`metacleaner-docs` functions the CLI
+uses) and downloads each result through the browser.
 
 Binds to `127.0.0.1` (loopback) by default — nothing outside this machine
 can reach it. `--host` exists to override this, but only do so if you
@@ -173,6 +256,7 @@ legitimate images.
 
 ## What it removes
 
+**Images:**
 - EXIF (camera make/model, lens, ISO, aperture, shutter speed, software, timestamps)
 - GPS / geotags
 - XMP and IPTC (creator info, copyright, keywords, edit history)
@@ -181,16 +265,35 @@ legitimate images.
 - AI generator signatures embedded by DALL-E, Midjourney, Adobe Firefly, etc.
 - The file's pixel-level fingerprint (optional, on by default)
 
+**Text / Markdown / HTML:**
+- Zero-width characters, bidi-control overrides, Unicode Tag block
+  smuggling, and supplementary-plane variation-selector smuggling — the
+  same techniques used to invisibly watermark LLM output, and (Unicode Tag
+  block specifically) to smuggle hidden instructions past a reader, as in
+  the 2025 "EchoLeak" prompt-injection attack on Microsoft 365 Copilot
+  (CVE-2025-32711)
+- Markdown YAML frontmatter keys that identify an author/tool/AI system
+  (`author`, `creator`, `generator`, `model`, `prompt`, ...)
+- HTML `<meta>` tags with the same identifying names, and non-conditional
+  HTML comments
+
+**Office documents (DOCX/XLSX/PPTX):**
+- Author, last-modified-by, company, manager, title, keywords, comments,
+  and any custom tracking properties in `docProps/core.xml`/`app.xml`/`custom.xml`
+
 ## What it can't remove
 
-Only data stored in file metadata / non-pixel container chunks is in scope.
+Only data stored in file metadata / non-pixel container chunks (for images)
+or dedicated metadata parts/tags (for text and documents) is in scope.
 Anything encoded into the pixels themselves — an invisible watermark such as
 Google's SynthID, or signals a visual AI classifier looks for — is not
-metadata and can't be stripped this way. Treat this as a privacy/provenance
-tool, not a guarantee against AI-content detectors.
+metadata and can't be stripped this way; the same goes for AI-text-detector
+evasion (paraphrasing to defeat statistical detectors), which is out of
+scope by design, not a gap. Treat this as a privacy/provenance tool, not a
+guarantee against AI-content detectors.
 
-Supported formats: JPEG, PNG, WebP, BMP, GIF, TIFF. HEIC/AVIF and video are
-not yet supported.
+Supported image formats: JPEG, PNG, WebP, BMP, GIF, TIFF. HEIC/AVIF and
+video are not yet supported.
 
 **Animated GIFs and multi-page TIFFs are refused outright, not silently
 truncated.** The `image` crate's public decoder API for both formats only
@@ -219,15 +322,27 @@ multi-page TIFF both being refused rather than silently truncated, and
 Stable Diffusion parameters, and GIF comment/application extensions across
 PNG, JPEG, GIF, and TIFF fixtures).
 
+`metacleaner-text`'s tests cover each invisible-character category (zero-width
+watermark patterns, bidi-override spoofing, Unicode Tag block smuggling,
+supplementary variation selectors), zero-width-joiner emoji preservation,
+frontmatter key stripping (including dash/underscore-insensitive matching
+and leaving non-identifying keys untouched), and the HTML module (generator/
+author `<meta>` stripping, plain-comment stripping, IE conditional-comment
+preservation, and not mis-parsing a hypothetical `<metadata>` tag as `<meta>`).
+
+`metacleaner-docs`'s tests, plus real-file verification against fixtures
+generated with `python-docx`/`openpyxl`/`python-pptx`, confirm identifying
+properties are blanked while document content and every other zip entry are
+preserved byte-for-byte.
+
 ## Roadmap
 
 - Package as a `.deb` (via `cargo-deb`) so `apt install metacleaner` gives
   you the `metaclean` binary — `clean`/`inspect` on the command line,
   `metaclean serve` for the local web UI. This is the near-term next step.
-- Text/document format support (DOCX/PDF/EPUB/HTML/Markdown metadata,
-  invisible-Unicode stripping) — a second wave once the image toolset and
-  its web UI are solid, matching the fuller feature set of tools like
-  `watermarks-remover`.
+- PDF `/Info` dictionary + XMP metadata stripping, and EPUB metadata
+  stripping — remaining format coverage matching the fuller feature set of
+  tools like `watermarks-remover`.
 - Animated GIF / multi-page TIFF support — clean each frame/page instead of
   refusing the whole file (needs the multi-frame encode path, not just the
   single-frame one `clean()` uses today).

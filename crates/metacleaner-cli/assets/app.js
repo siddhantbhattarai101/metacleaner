@@ -59,7 +59,7 @@ function fileKey(file) {
   return `${file.name}::${file.size}::${file.lastModified}`;
 }
 
-const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text"];
+const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text", ".html", ".htm"];
 const DOC_EXTENSIONS = [".docx", ".xlsx", ".pptx"];
 
 function isTextFile(file) {
@@ -303,7 +303,8 @@ function renderCard(entry) {
 
   if (entry.inspect) {
     const frontmatterFindings = entry.inspect.frontmatter_findings || [];
-    const totalFindings = entry.inspect.findings.length + frontmatterFindings.length;
+    const htmlFindings = entry.inspect.html_findings || [];
+    const totalFindings = entry.inspect.findings.length + frontmatterFindings.length + htmlFindings.length;
 
     const badge = document.createElement("span");
     if (entry.inspect.clean) {
@@ -348,6 +349,18 @@ function renderCard(entry) {
         cat.textContent = "[frontmatter]";
         const label = document.createElement("span");
         label.textContent = `${f.key}: ${f.value}`;
+        row.appendChild(cat);
+        row.appendChild(label);
+        findings.appendChild(row);
+      }
+      for (const f of htmlFindings) {
+        const row = document.createElement("div");
+        row.className = "finding-row";
+        const cat = document.createElement("span");
+        cat.className = "cat";
+        cat.textContent = f.kind === "comment" ? "[html comment]" : "[html meta]";
+        const label = document.createElement("span");
+        label.textContent = f.kind === "comment" ? f.value : `${f.label}: ${f.value}`;
         row.appendChild(cat);
         row.appendChild(label);
         findings.appendChild(row);

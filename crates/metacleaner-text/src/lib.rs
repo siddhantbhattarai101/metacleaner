@@ -32,6 +32,11 @@ pub use frontmatter::{
     inspect_frontmatter, strip_frontmatter, FrontmatterFinding, FrontmatterReport,
 };
 
+mod html;
+pub use html::{inspect_html, strip_html, HtmlFinding, HtmlFindingKind, HtmlReport};
+
+mod identifying_keys;
+
 /// What kind of invisible/steganography-relevant character a
 /// [`TextFinding`] represents.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

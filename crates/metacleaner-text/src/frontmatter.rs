@@ -16,29 +16,7 @@
 //! frontmatter keys are used in practice); nested maps/lists are left
 //! alone rather than risk misparsing them.
 
-/// Frontmatter keys that identify an author/tool/AI system rather than
-/// describing the content itself. Matched case-insensitively, with `-`/`_`
-/// treated as equivalent (so `last-modified-by` and `last_modified_by`
-/// both match).
-const IDENTIFYING_KEYS: &[&str] = &[
-    "author",
-    "authors",
-    "creator",
-    "editor",
-    "contributor",
-    "lastmodifiedby",
-    "generator",
-    "poweredby",
-    "tool",
-    "model",
-    "aimodel",
-    "ai",
-    "aigenerated",
-    "assistant",
-    "prompt",
-    "sourcemodel",
-    "og:generator",
-];
+use crate::identifying_keys::is_identifying_key;
 
 #[derive(Debug, Clone)]
 pub struct FrontmatterFinding {
@@ -129,18 +107,6 @@ pub fn strip_frontmatter(input: &str) -> (String, FrontmatterReport) {
             removed,
         },
     )
-}
-
-fn is_identifying_key(key: &str) -> bool {
-    let normalized: String = key
-        .chars()
-        .filter(|c| *c != '-' && *c != '_')
-        .flat_map(char::to_lowercase)
-        .collect();
-    IDENTIFYING_KEYS.iter().any(|k| {
-        let k_normalized: String = k.chars().filter(|c| *c != '-' && *c != '_').collect();
-        k_normalized == normalized
-    })
 }
 
 /// A simple top-level `key: value` line: no leading whitespace (top-level,

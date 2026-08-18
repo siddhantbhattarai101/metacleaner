@@ -328,13 +328,18 @@ async fn api_inspect_text(multipart: Multipart) -> Response {
             removed: Vec::new(),
         }
     };
+    let html_report = if is_html_filename(&upload.file_name) {
+        metacleaner_text::inspect_html(&text)
+    } else {
+        metacleaner_text::HtmlReport::default()
+    };
 
     json_response(
         StatusCode::OK,
         serde_json::json!({
             "ok": true,
             "char_count": report.char_count,
-            "clean": report.is_clean() && fm_report.is_clean(),
+            "clean": report.is_clean() && fm_report.is_clean() && html_report.is_clean(),
             "findings": report.findings.iter().map(|f| serde_json::json!({
                 "category": f.category.as_str(),
                 "codepoint": format!("U+{:04X}", f.codepoint),
@@ -344,6 +349,11 @@ async fn api_inspect_text(multipart: Multipart) -> Response {
                 "key": f.key,
                 "value": f.value,
             })).collect::<Vec<_>>(),
+            "html_findings": html_report.findings.iter().map(|f| serde_json::json!({
+                "kind": f.kind.as_str(),
+                "label": f.label,
+                "value": f.value,
+            })).collect::<Vec<_>>(),
         }),
     )
 }
@@ -351,6 +361,11 @@ async fn api_inspect_text(multipart: Multipart) -> Response {
 fn is_markdown_filename(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.ends_with(".md") || lower.ends_with(".markdown")
+}
+
+fn is_html_filename(name: &str) -> bool {
+    let lower = name.to_lowercase();
+    lower.ends_with(".html") || lower.ends_with(".htm")
 }
 
 async fn api_clean_text(multipart: Multipart) -> Response {
@@ -385,6 +400,13 @@ async fn api_clean_text(multipart: Multipart) -> Response {
         (text, Vec::new())
     };
 
+    let (text, html_removed) = if is_html_filename(&upload.file_name) {
+        let (stripped, html_report) = metacleaner_text::strip_html(&text);
+        (stripped, html_report.findings)
+    } else {
+        (text, Vec::new())
+    };
+
     let (cleaned, report) = metacleaner_text::clean_text(&text, &opts);
 
     let stem = std::path::Path::new(&upload.file_name)
@@ -401,10 +423,14 @@ async fn api_clean_text(multipart: Multipart) -> Response {
         serde_json::json!({
             "ok": true,
             "filename": format!("{stem}-clean.{ext}"),
-            "mime": "text/plain",
+            "mime": text_mime_for(&ext),
             "chars_in": report.chars_in,
             "chars_out": report.chars_out,
             "frontmatter_keys_removed": fm_removed.iter().map(|f| f.key.clone()).collect::<Vec<_>>(),
+            "html_findings_removed": html_removed.iter().map(|f| serde_json::json!({
+                "kind": f.kind.as_str(),
+                "label": f.label,
+            })).collect::<Vec<_>>(),
             "removed": report.removed.iter().map(|f| serde_json::json!({
                 "category": f.category.as_str(),
                 "codepoint": format!("U+{:04X}", f.codepoint),
@@ -413,6 +439,14 @@ async fn api_clean_text(multipart: Multipart) -> Response {
             "data_base64": BASE64.encode(cleaned.as_bytes()),
         }),
     )
+}
+
+fn text_mime_for(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "md" | "markdown" => "text/markdown",
+        "html" | "htm" => "text/html",
+        _ => "text/plain",
+    }
 }
 
 async fn api_inspect_doc(multipart: Multipart) -> Response {
