@@ -39,23 +39,20 @@
           <span class="option-help">Adds invisible pixel noise so an old copy of this file can't be hash-matched back to your download. Optional &mdash; leave off for maximum quality.</span>
         </span>
       </label>
+
+      <div id="noise-level-row" class="nested-option" hidden>
+        <label for="opt-noise-level">How much noise?</label>
+        <select id="opt-noise-level">
+          <option value="light">Light &mdash; barely detectable</option>
+          <option value="medium" selected>Medium &mdash; recommended</option>
+          <option value="strong">Strong &mdash; more disruptive, still invisible to the eye</option>
+        </select>
+      </div>
     </div>
 
     <details id="advanced-details" class="advanced">
       <summary>Advanced settings</summary>
       <div class="options-grid">
-        <label>Fingerprint strength <span class="option-help">(only applies if scrambling is on)</span>
-          <input type="range" id="opt-strength" min="1" max="4" value="2">
-          <span id="opt-strength-val">2</span>
-        </label>
-        <label>Fingerprint fraction of pixels <span class="option-help">(only applies if scrambling is on)</span>
-          <input type="range" id="opt-fraction" min="0" max="100" value="25">
-          <span id="opt-fraction-val">25%</span>
-        </label>
-        <label>JPEG quality <span class="option-help">(higher = larger file, less compression loss)</span>
-          <input type="range" id="opt-quality" min="50" max="100" value="95">
-          <span id="opt-quality-val">95</span>
-        </label>
         <label>Output format
           <select id="opt-format">
             <option value="">Keep original</option>
@@ -66,6 +63,10 @@
             <option value="gif">GIF (256 colors &mdash; visible loss on photos)</option>
             <option value="tiff">TIFF</option>
           </select>
+        </label>
+        <label>JPEG quality <span class="option-help">Only applies when the output is a JPEG &mdash; ignored for PNG/WebP/BMP/GIF/TIFF. Higher = larger file, less compression loss.</span>
+          <input type="range" id="opt-quality" min="50" max="100" value="95">
+          <span id="opt-quality-val">95</span>
         </label>
       </div>
     </details>

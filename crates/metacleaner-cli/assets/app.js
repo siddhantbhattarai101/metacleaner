@@ -8,17 +8,24 @@ const cleanAllBtn = document.getElementById("clean-all-btn");
 
 const optEnhance = document.getElementById("opt-enhance");
 const optFingerprint = document.getElementById("opt-fingerprint");
-const optStrength = document.getElementById("opt-strength");
-const optStrengthVal = document.getElementById("opt-strength-val");
-const optFraction = document.getElementById("opt-fraction");
-const optFractionVal = document.getElementById("opt-fraction-val");
+const noiseLevelRow = document.getElementById("noise-level-row");
+const optNoiseLevel = document.getElementById("opt-noise-level");
 const optQuality = document.getElementById("opt-quality");
 const optQualityVal = document.getElementById("opt-quality-val");
 const optFormat = document.getElementById("opt-format");
 
-optStrength.addEventListener("input", () => (optStrengthVal.textContent = optStrength.value));
-optFraction.addEventListener("input", () => (optFractionVal.textContent = `${optFraction.value}%`));
+// Plain-language noise-level choices, mapped to the underlying
+// strength/fraction knobs so nobody has to understand those directly.
+const NOISE_LEVELS = {
+  light: { strength: 1, fraction: 0.15 },
+  medium: { strength: 2, fraction: 0.25 },
+  strong: { strength: 3, fraction: 0.4 },
+};
+
 optQuality.addEventListener("input", () => (optQualityVal.textContent = optQuality.value));
+optFingerprint.addEventListener("change", () => {
+  noiseLevelRow.hidden = !optFingerprint.checked;
+});
 
 /** @type {Map<string, {file: File, id: string, inspect: object|null, inspectError: string|null, cleanState: "idle"|"working"|"done"|"error", cleanError: string|null}>} */
 const entries = new Map();
@@ -73,12 +80,14 @@ async function runClean(id) {
   entry.cleanError = null;
   render();
 
+  const noise = NOISE_LEVELS[optNoiseLevel.value] || NOISE_LEVELS.medium;
+
   const form = new FormData();
   form.append("file", entry.file, entry.file.name);
   form.append("enhance", optEnhance.checked ? "true" : "false");
   form.append("reset_fingerprint", optFingerprint.checked ? "true" : "false");
-  form.append("fingerprint_strength", optStrength.value);
-  form.append("fingerprint_fraction", String(Number(optFraction.value) / 100));
+  form.append("fingerprint_strength", String(noise.strength));
+  form.append("fingerprint_fraction", String(noise.fraction));
   form.append("jpeg_quality", optQuality.value);
   if (optFormat.value) form.append("format", optFormat.value);
 
