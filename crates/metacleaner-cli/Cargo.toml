@@ -1,6 +1,6 @@
 [package]
 name = "metacleaner-cli"
-description = "CLI for metacleaner-core: strip EXIF/GPS/XMP/IPTC/C2PA/AI-generation metadata from images."
+description = "Local, offline metadata cleaner and AI-tag remover for images, text/Markdown, HTML, and Office documents."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -22,3 +22,32 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 base64 = "0.22"
 open = "5"
 image = { version = "0.25", default-features = false, features = ["png"] }
+
+# `cargo deb -p metacleaner-cli` (run from the workspace root) packages
+# `metaclean` as an apt-installable .deb. The binary is fully
+# self-contained — the AI model and web UI assets are embedded via
+# `include_bytes!`/`include_str!` and ONNX Runtime is statically linked
+# (no libonnxruntime.so at runtime) — so this needs no postinst script and
+# no extra asset files beyond the binary itself.
+[package.metadata.deb]
+name = "metacleaner"
+maintainer = "Siddhant Bhattarai <210212546+siddhantbhattarai101@users.noreply.github.com>"
+copyright = "2026, Siddhant Bhattarai"
+license-file = ["../../LICENSE", "0"]
+extended-description = """\
+A local, offline metadata cleaner and AI-tag remover for images \
+(JPEG/PNG/WebP/BMP/GIF/TIFF), text/Markdown, HTML, and Office documents \
+(DOCX/XLSX/PPTX). Strips EXIF, GPS, XMP, IPTC, C2PA content credentials, \
+and AI-generator signatures from images; invisible-Unicode steganography \
+and AI-identifying frontmatter/meta tags from text/Markdown/HTML; and \
+author/company/tracking properties from Office documents. Includes real \
+AI super-resolution upscaling (Real-ESRGAN) and a local drag-and-drop web \
+UI (`metaclean serve`). No network calls, no upload — everything runs on \
+your machine."""
+section = "utils"
+priority = "optional"
+depends = "$auto"
+assets = [
+    ["target/release/metaclean", "usr/bin/", "755"],
+    ["../../README.md", "usr/share/doc/metacleaner/README.md", "644"],
+]

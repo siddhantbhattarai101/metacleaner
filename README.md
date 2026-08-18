@@ -71,6 +71,25 @@ cargo build --release --workspace
 # binary at target/release/metaclean
 ```
 
+### Package as a `.deb`
+
+```bash
+cargo install cargo-deb   # one-time
+cargo deb -p metacleaner-cli
+# package at target/debian/metacleaner_<version>-1_amd64.deb
+
+sudo apt install ./target/debian/metacleaner_*.deb
+# or: sudo dpkg -i target/debian/metacleaner_*.deb
+```
+
+The `metaclean` binary is fully self-contained — the AI model and web UI
+assets are embedded via `include_bytes!`/`include_str!`, and ONNX Runtime
+is statically linked (no `libonnxruntime.so` at runtime) — so the package
+needs no postinst script and depends on nothing beyond `libc6`/`libstdc++6`
+(auto-detected by `dpkg-shlibdeps` via the `depends = "$auto"` setting in
+`crates/metacleaner-cli/Cargo.toml`'s `[package.metadata.deb]`). After
+installing, `metaclean` and `metaclean serve` are on your `PATH`.
+
 ## Usage
 
 `metaclean` has a read-only/destructive pair of subcommands per file type:
@@ -337,9 +356,10 @@ preserved byte-for-byte.
 
 ## Roadmap
 
-- Package as a `.deb` (via `cargo-deb`) so `apt install metacleaner` gives
-  you the `metaclean` binary — `clean`/`inspect` on the command line,
-  `metaclean serve` for the local web UI. This is the near-term next step.
+- Publish the `.deb` to a real apt repository (or a GitHub Releases page)
+  so installing doesn't require a local `cargo deb` build — right now
+  `cargo deb -p metacleaner-cli` produces the package but you still have to
+  build it yourself first.
 - PDF `/Info` dictionary + XMP metadata stripping, and EPUB metadata
   stripping — remaining format coverage matching the fuller feature set of
   tools like `watermarks-remover`.
