@@ -1,0 +1,14 @@
+[package]
+name = "metacleaner-core"
+description = "Strip EXIF/GPS/XMP/IPTC/C2PA/AI-generation metadata from images and optionally reset their pixel fingerprint. Pure in-memory, no I/O — safe for native and future WASM targets."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+rand = "0.8"
+thiserror = "1"
+
+[dev-dependencies]
