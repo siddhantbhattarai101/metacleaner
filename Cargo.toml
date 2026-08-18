@@ -5,6 +5,7 @@ members = [
     "crates/metacleaner-cli",
     "crates/metacleaner-ai",
     "crates/metacleaner-text",
+    "crates/metacleaner-docs",
 ]
 
 [workspace.package]

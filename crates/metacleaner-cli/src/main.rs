@@ -57,9 +57,46 @@ enum Command {
     /// Report what invisible/steganography-relevant characters are
     /// present in a text file, without modifying anything.
     InspectText(InspectTextArgs),
+    /// Strip identifying metadata (author, company, custom tracking
+    /// properties) from DOCX/XLSX/PPTX office documents (destructive:
+    /// writes cleaned output).
+    CleanDoc(CleanDocArgs),
+    /// Report what identifying metadata is present in a DOCX/XLSX/PPTX
+    /// file, without modifying anything.
+    InspectDoc(InspectDocArgs),
     /// Run a local web UI (loopback-only by default) for drag-and-drop
     /// inspect/clean, with nothing ever leaving this machine.
     Serve(ServeArgs),
+}
+
+#[derive(Args, Debug)]
+struct CleanDocArgs {
+    /// DOCX/XLSX/PPTX files to clean. Accepts multiple for batch processing.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Directory to write cleaned files into (default: alongside each input, suffixed "-clean").
+    #[arg(short, long)]
+    out_dir: Option<PathBuf>,
+
+    /// Overwrite the input file in place instead of writing a new file.
+    #[arg(long, conflicts_with = "out_dir")]
+    in_place: bool,
+
+    /// Emit machine-readable JSON instead of one line of text per file.
+    #[arg(long)]
+    json: bool,
+}
+
+#[derive(Args, Debug)]
+struct InspectDocArgs {
+    /// DOCX/XLSX/PPTX files to inspect. Accepts multiple.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -234,6 +271,8 @@ async fn main() -> ExitCode {
         Command::Inspect(args) => run_inspect(args),
         Command::CleanText(args) => run_clean_text(args),
         Command::InspectText(args) => run_inspect_text(args),
+        Command::CleanDoc(args) => run_clean_doc(args),
+        Command::InspectDoc(args) => run_inspect_doc(args),
         Command::Serve(args) => run_serve(args).await,
     }
 }
@@ -701,6 +740,189 @@ fn inspect_text_one(input_path: &Path) -> Result<metacleaner_text::InspectTextRe
     let text = String::from_utf8(bytes)
         .map_err(|e| CliError::Text(format!("not valid UTF-8 text: {e}")))?;
     Ok(metacleaner_text::inspect_text(&text))
+}
+
+fn run_clean_doc(args: &CleanDocArgs) -> ExitCode {
+    let opts = metacleaner_docs::OoxmlOptions::default();
+
+    if let Some(dir) = &args.out_dir {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!(
+                "error: could not create output directory {}: {e}",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let mut failures = 0usize;
+    let total = args.inputs.len();
+    let mut json_results = Vec::new();
+
+    for input_path in &args.inputs {
+        match process_doc_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
+            Ok((out_path, report)) => {
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "output": out_path.display().to_string(),
+                        "bytes_in": report.bytes_in,
+                        "bytes_out": report.bytes_out,
+                        "stripped_parts": report.stripped_parts,
+                    }));
+                } else {
+                    println!(
+                        "ok   {} -> {} [{} -> {} bytes, stripped: {}]",
+                        input_path.display(),
+                        out_path.display(),
+                        report.bytes_in,
+                        report.bytes_out,
+                        report.stripped_parts.join(", "),
+                    );
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    } else {
+        println!(
+            "\n{}/{total} documents cleaned successfully.",
+            total - failures
+        );
+    }
+
+    if failures > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn process_doc_one(
+    input_path: &Path,
+    opts: &metacleaner_docs::OoxmlOptions,
+    out_dir: Option<&Path>,
+    in_place: bool,
+) -> Result<(PathBuf, metacleaner_docs::OoxmlCleanReport), CliError> {
+    let size = fs::metadata(input_path)
+        .map_err(|e| CliError::Io(input_path.to_path_buf(), e))?
+        .len();
+    if size > opts.max_input_bytes {
+        return Err(CliError::Text(format!(
+            "input is {size} bytes, which exceeds the {}-byte limit",
+            opts.max_input_bytes
+        )));
+    }
+
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let (cleaned, report) =
+        metacleaner_docs::clean_ooxml(&bytes, opts).map_err(|e| CliError::Text(e.to_string()))?;
+
+    let out_path = if in_place {
+        input_path.to_path_buf()
+    } else {
+        doc_destination_path(input_path, out_dir)
+    };
+
+    fs::write(&out_path, &cleaned).map_err(|e| CliError::Io(out_path.clone(), e))?;
+    Ok((out_path, report))
+}
+
+fn doc_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let ext = input
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_else(|| "docx".to_string());
+    let file_name = format!("{stem}-clean.{ext}");
+
+    match out_dir {
+        Some(dir) => dir.join(file_name),
+        None => input.with_file_name(file_name),
+    }
+}
+
+fn run_inspect_doc(args: &InspectDocArgs) -> ExitCode {
+    let mut any_findings = false;
+    let mut any_failures = false;
+    let mut json_results = Vec::new();
+
+    for input_path in &args.inputs {
+        match inspect_doc_one(input_path) {
+            Ok(report) => {
+                if !report.is_clean() {
+                    any_findings = true;
+                }
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "clean": report.is_clean(),
+                        "findings": report.findings.iter().map(|f| serde_json::json!({
+                            "part": f.part,
+                            "field": f.field,
+                            "value": f.value,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    println!("{}", input_path.display());
+                    if report.is_clean() {
+                        println!("  no identifying metadata found");
+                    } else {
+                        for finding in &report.findings {
+                            println!("  [{}] {} = {}", finding.part, finding.field, finding.value);
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                any_failures = true;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    }
+
+    if any_failures || any_findings {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn inspect_doc_one(input_path: &Path) -> Result<metacleaner_docs::InspectOoxmlReport, CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    metacleaner_docs::inspect_ooxml(&bytes, &metacleaner_docs::OoxmlOptions::default())
+        .map_err(|e| CliError::Text(e.to_string()))
 }
 
 #[derive(Debug)]
