@@ -1,8 +1,11 @@
 # metacleaner
 
-A local, offline metadata cleaner and AI-tag remover, written in Rust, for
-images, plain text/Markdown, HTML, SVG, PDF, Office documents, and
-MP3/MP4/M4A/MOV audio-video files.
+A local, offline metadata cleaner and AI-tag remover for images,
+text/Markdown, HTML, SVG, PDF, Office documents, and MP3/MP4/M4A/MOV
+audio-video, written in Rust. Strips EXIF, GPS, XMP, IPTC, C2PA, and
+AI-generator signatures (Stable Diffusion, DALL-E, Midjourney, Firefly);
+invisible-Unicode steganography; PDF/XMP metadata; ID3/iTunes tags; and
+document metadata. No network calls, no upload. Install via apt.
 
 - **Images** (JPEG, PNG, WebP, BMP, GIF, TIFF): strips EXIF, GPS, XMP, IPTC,
   C2PA content credentials, and AI-generator signatures (Stable Diffusion
