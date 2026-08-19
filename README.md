@@ -57,12 +57,6 @@ No network calls, no server upload — everything runs on your machine.
 
 ### Debian / Ubuntu (apt)
 
-> **Already have this repo configured?** The signing key was rotated on
-> 2026-08-19 (fingerprint now `7D2D 3968 6A63 1F7A CC63 A6F9 D4B2 17B5
-> 7B2D AA3B`). If `sudo apt update` starts failing with a signature
-> error, re-run the `curl`/`tee` step below to pick up the new key, then
-> update/upgrade again.
-
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://siddhantbhattarai.github.io/metacleaner/pubkey.gpg \
