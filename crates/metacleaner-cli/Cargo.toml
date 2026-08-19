@@ -1,6 +1,6 @@
 [package]
 name = "metacleaner-cli"
-description = "Local, offline metadata cleaner and AI-tag remover for images, text/Markdown, HTML, and Office documents."
+description = "Local, offline metadata cleaner and AI-tag remover for images, text/Markdown, HTML, SVG, PDF, Office documents, and MP3/MP4/M4A/MOV audio-video."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,6 +15,8 @@ metacleaner-core = { path = "../metacleaner-core" }
 metacleaner-ai = { path = "../metacleaner-ai" }
 metacleaner-text = { path = "../metacleaner-text" }
 metacleaner-docs = { path = "../metacleaner-docs" }
+metacleaner-pdf = { path = "../metacleaner-pdf" }
+metacleaner-media = { path = "../metacleaner-media" }
 clap = { version = "4", features = ["derive"] }
 serde_json = "1"
 axum = { version = "0.7", features = ["multipart"] }
@@ -22,6 +24,9 @@ tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal
 base64 = "0.22"
 open = "5"
 image = { version = "0.25", default-features = false, features = ["png"] }
+walkdir = "2"
+clap_complete = "4.6.9"
+clap_mangen = "0.3.3"
 
 # `cargo deb -p metacleaner-cli` (run from the workspace root) packages
 # `metaclean` as an apt-installable .deb. The binary is fully
@@ -36,14 +41,17 @@ copyright = "2026, Siddhant Bhattarai"
 license-file = ["../../LICENSE", "0"]
 extended-description = """\
 A local, offline metadata cleaner and AI-tag remover for images \
-(JPEG/PNG/WebP/BMP/GIF/TIFF), text/Markdown, HTML, and Office documents \
-(DOCX/XLSX/PPTX). Strips EXIF, GPS, XMP, IPTC, C2PA content credentials, \
-and AI-generator signatures from images; invisible-Unicode steganography \
-and AI-identifying frontmatter/meta tags from text/Markdown/HTML; and \
-author/company/tracking properties from Office documents. Includes real \
-AI super-resolution upscaling (Real-ESRGAN) and a local drag-and-drop web \
-UI (`metaclean serve`). No network calls, no upload — everything runs on \
-your machine."""
+(JPEG/PNG/WebP/BMP/GIF/TIFF), text/Markdown, HTML, SVG, PDF, Office \
+documents (DOCX/XLSX/PPTX), and audio/video (MP3/MP4/M4A/MOV). Strips \
+EXIF, GPS, XMP, IPTC, C2PA content credentials, and AI-generator \
+signatures from images; invisible-Unicode steganography and \
+AI-identifying frontmatter/meta tags/editor metadata from \
+text/Markdown/HTML/SVG; the /Info dictionary and XMP metadata streams \
+from PDF; author/company/tracking properties from Office documents; and \
+ID3/iTunes-style metadata from MP3/MP4/M4A/MOV. Accepts directories via \
+--recursive. Includes real AI super-resolution upscaling (Real-ESRGAN) \
+and a local drag-and-drop web UI (`metaclean serve`). No network calls, \
+no upload — everything runs on your machine."""
 section = "utils"
 priority = "optional"
 depends = "$auto"

@@ -59,6 +59,10 @@ pub async fn run(config: ServeConfig) -> std::io::Result<()> {
         .route("/api/clean-text", post(api_clean_text))
         .route("/api/inspect-doc", post(api_inspect_doc))
         .route("/api/clean-doc", post(api_clean_doc))
+        .route("/api/inspect-pdf", post(api_inspect_pdf))
+        .route("/api/clean-pdf", post(api_clean_pdf))
+        .route("/api/inspect-media", post(api_inspect_media))
+        .route("/api/clean-media", post(api_clean_media))
         // Belt-and-suspenders network-level cap, on top of the
         // application-level max_input_bytes check clean()/inspect() do
         // themselves — reject an oversized body before it's even buffered.
@@ -333,13 +337,19 @@ async fn api_inspect_text(multipart: Multipart) -> Response {
     } else {
         metacleaner_text::HtmlReport::default()
     };
+    let svg_report = if is_svg_filename(&upload.file_name) {
+        metacleaner_text::inspect_svg(&text)
+    } else {
+        metacleaner_text::SvgReport::default()
+    };
+    let typography_report = metacleaner_text::inspect_typography(&text);
 
     json_response(
         StatusCode::OK,
         serde_json::json!({
             "ok": true,
             "char_count": report.char_count,
-            "clean": report.is_clean() && fm_report.is_clean() && html_report.is_clean(),
+            "clean": report.is_clean() && fm_report.is_clean() && html_report.is_clean() && svg_report.is_clean() && typography_report.is_clean(),
             "findings": report.findings.iter().map(|f| serde_json::json!({
                 "category": f.category.as_str(),
                 "codepoint": format!("U+{:04X}", f.codepoint),
@@ -354,6 +364,16 @@ async fn api_inspect_text(multipart: Multipart) -> Response {
                 "label": f.label,
                 "value": f.value,
             })).collect::<Vec<_>>(),
+            "svg_findings": svg_report.findings.iter().map(|f| serde_json::json!({
+                "kind": f.kind.as_str(),
+                "label": f.label,
+                "value": f.value,
+            })).collect::<Vec<_>>(),
+            "typography_findings": typography_report.findings.iter().map(|f| serde_json::json!({
+                "kind": f.kind.as_str(),
+                "codepoint": format!("U+{:04X}", f.codepoint),
+                "count": f.count,
+            })).collect::<Vec<_>>(),
         }),
     )
 }
@@ -366,6 +386,10 @@ fn is_markdown_filename(name: &str) -> bool {
 fn is_html_filename(name: &str) -> bool {
     let lower = name.to_lowercase();
     lower.ends_with(".html") || lower.ends_with(".htm")
+}
+
+fn is_svg_filename(name: &str) -> bool {
+    name.to_lowercase().ends_with(".svg")
 }
 
 async fn api_clean_text(multipart: Multipart) -> Response {
@@ -407,6 +431,22 @@ async fn api_clean_text(multipart: Multipart) -> Response {
         (text, Vec::new())
     };
 
+    let (text, svg_removed) = if is_svg_filename(&upload.file_name) {
+        let (stripped, svg_report) = metacleaner_text::strip_svg(&text);
+        (stripped, svg_report.findings)
+    } else {
+        (text, Vec::new())
+    };
+
+    let normalize_typography =
+        upload.fields.get("normalize_typography").map(String::as_str) == Some("true");
+    let (text, typography_removed) = if normalize_typography {
+        let (normalized, typo_report) = metacleaner_text::normalize_typography(&text);
+        (normalized, typo_report.findings)
+    } else {
+        (text, Vec::new())
+    };
+
     let (cleaned, report) = metacleaner_text::clean_text(&text, &opts);
 
     let stem = std::path::Path::new(&upload.file_name)
@@ -431,6 +471,15 @@ async fn api_clean_text(multipart: Multipart) -> Response {
                 "kind": f.kind.as_str(),
                 "label": f.label,
             })).collect::<Vec<_>>(),
+            "svg_findings_removed": svg_removed.iter().map(|f| serde_json::json!({
+                "kind": f.kind.as_str(),
+                "label": f.label,
+            })).collect::<Vec<_>>(),
+            "typography_normalized": typography_removed.iter().map(|f| serde_json::json!({
+                "kind": f.kind.as_str(),
+                "codepoint": format!("U+{:04X}", f.codepoint),
+                "count": f.count,
+            })).collect::<Vec<_>>(),
             "removed": report.removed.iter().map(|f| serde_json::json!({
                 "category": f.category.as_str(),
                 "codepoint": format!("U+{:04X}", f.codepoint),
@@ -445,6 +494,7 @@ fn text_mime_for(ext: &str) -> &'static str {
     match ext.to_lowercase().as_str() {
         "md" | "markdown" => "text/markdown",
         "html" | "htm" => "text/html",
+        "svg" => "image/svg+xml",
         _ => "text/plain",
     }
 }
@@ -512,12 +562,152 @@ async fn api_clean_doc(multipart: Multipart) -> Response {
     }
 }
 
+async fn api_inspect_pdf(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    match metacleaner_pdf::inspect_pdf(&upload.file_bytes, &metacleaner_pdf::PdfOptions::default())
+    {
+        Ok(report) => json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "ok": true,
+                "clean": report.is_clean(),
+                "findings": report.findings.iter().map(|f| serde_json::json!({
+                    "location": f.location,
+                    "field": f.field,
+                    "value": f.value,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
+        Err(e) => json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+    }
+}
+
+async fn api_clean_pdf(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    match metacleaner_pdf::clean_pdf(&upload.file_bytes, &metacleaner_pdf::PdfOptions::default()) {
+        Ok((cleaned, report)) => {
+            let stem = std::path::Path::new(&upload.file_name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "document".to_string());
+
+            json_response(
+                StatusCode::OK,
+                serde_json::json!({
+                    "ok": true,
+                    "filename": format!("{stem}-clean.pdf"),
+                    "mime": "application/pdf",
+                    "bytes_in": report.bytes_in,
+                    "bytes_out": report.bytes_out,
+                    "stripped_parts": report.stripped,
+                    "data_base64": BASE64.encode(&cleaned),
+                }),
+            )
+        }
+        Err(e) => json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+    }
+}
+
 fn doc_mime_for(ext: &str) -> &'static str {
     match ext.to_lowercase().as_str() {
         "docx" => "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         "xlsx" => "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         "pptx" => "application/vnd.openxmlformats-officedocument.presentationml.presentation",
         _ => "application/octet-stream",
+    }
+}
+
+fn is_mp3_filename(name: &str) -> bool {
+    name.to_lowercase().ends_with(".mp3")
+}
+
+fn media_mime_for(ext: &str) -> &'static str {
+    match ext.to_lowercase().as_str() {
+        "mp3" => "audio/mpeg",
+        "mp4" => "video/mp4",
+        "m4a" => "audio/mp4",
+        "m4v" => "video/x-m4v",
+        "mov" => "video/quicktime",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn api_inspect_media(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    let opts = metacleaner_media::MediaOptions::default();
+    let result = if is_mp3_filename(&upload.file_name) {
+        metacleaner_media::inspect_mp3(&upload.file_bytes, &opts)
+    } else {
+        metacleaner_media::inspect_mp4(&upload.file_bytes, &opts)
+    };
+
+    match result {
+        Ok(findings) => json_response(
+            StatusCode::OK,
+            serde_json::json!({
+                "ok": true,
+                "clean": findings.is_empty(),
+                "findings": findings.iter().map(|f| serde_json::json!({
+                    "location": f.location,
+                    "field": f.field,
+                    "value": f.value,
+                })).collect::<Vec<_>>(),
+            }),
+        ),
+        Err(e) => json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
+    }
+}
+
+async fn api_clean_media(multipart: Multipart) -> Response {
+    let upload = match parse_upload(multipart).await {
+        Ok(u) => u,
+        Err(e) => return json_error(StatusCode::BAD_REQUEST, e),
+    };
+
+    let opts = metacleaner_media::MediaOptions::default();
+    let result = if is_mp3_filename(&upload.file_name) {
+        metacleaner_media::clean_mp3(&upload.file_bytes, &opts)
+    } else {
+        metacleaner_media::clean_mp4(&upload.file_bytes, &opts)
+    };
+
+    match result {
+        Ok((cleaned, stripped)) => {
+            let stem = std::path::Path::new(&upload.file_name)
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_else(|| "media".to_string());
+            let ext = std::path::Path::new(&upload.file_name)
+                .extension()
+                .map(|e| e.to_string_lossy().to_string())
+                .unwrap_or_else(|| "mp3".to_string());
+
+            json_response(
+                StatusCode::OK,
+                serde_json::json!({
+                    "ok": true,
+                    "filename": format!("{stem}-clean.{ext}"),
+                    "mime": media_mime_for(&ext),
+                    "bytes_in": upload.file_bytes.len(),
+                    "bytes_out": cleaned.len(),
+                    "stripped_parts": stripped,
+                    "data_base64": BASE64.encode(&cleaned),
+                }),
+            )
+        }
+        Err(e) => json_error(StatusCode::UNPROCESSABLE_ENTITY, e.to_string()),
     }
 }
 

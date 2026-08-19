@@ -2,7 +2,8 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Args, CommandFactory, Parser, Subcommand, ValueEnum};
+use clap_complete::Shell;
 use metacleaner_core::{
     clean, inspect, CleanError, CleanOptions, ImageFormat, InspectOptions, InspectReport,
     DEFAULT_MAX_DECODED_BYTES, DEFAULT_MAX_IMAGE_DIMENSION, DEFAULT_MAX_INPUT_BYTES,
@@ -10,6 +11,121 @@ use metacleaner_core::{
 
 mod ai_upscale;
 mod serve;
+
+/// Expand `inputs` into a flat file list. Files are passed through as-is
+/// (explicitly naming a file always processes it, regardless of
+/// extension). A directory is only accepted when `recursive` is set — a
+/// destructive/reporting tool should never silently turn a mistyped
+/// directory argument into "process everything under here" — in which
+/// case it's walked recursively and every entry matching `is_supported`
+/// is included; non-matching files are counted and reported once at the
+/// end rather than spamming a line per skip.
+fn expand_inputs(
+    inputs: &[PathBuf],
+    recursive: bool,
+    is_supported: impl Fn(&Path) -> bool,
+) -> Result<Vec<PathBuf>, CliError> {
+    let mut out = Vec::new();
+    let mut skipped = 0usize;
+
+    for p in inputs {
+        if p.is_dir() {
+            if !recursive {
+                return Err(CliError::Text(format!(
+                    "{} is a directory; pass --recursive/-r to process directories",
+                    p.display()
+                )));
+            }
+            for entry in walkdir::WalkDir::new(p) {
+                let entry =
+                    entry.map_err(|e| CliError::Text(format!("walking {}: {e}", p.display())))?;
+                if !entry.file_type().is_file() {
+                    continue;
+                }
+                let path = entry.into_path();
+                if is_supported(&path) {
+                    out.push(path);
+                } else {
+                    skipped += 1;
+                }
+            }
+        } else {
+            out.push(p.clone());
+        }
+    }
+
+    if skipped > 0 {
+        eprintln!(
+            "note: skipped {skipped} file(s) with an unrecognized extension while expanding directory input"
+        );
+    }
+
+    Ok(out)
+}
+
+fn is_image_extension(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("jpg" | "jpeg" | "png" | "webp" | "bmp" | "gif" | "tif" | "tiff")
+    )
+}
+
+fn is_text_extension(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("txt" | "md" | "markdown" | "text" | "html" | "htm" | "svg")
+    )
+}
+
+fn is_doc_extension(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("docx" | "xlsx" | "pptx")
+    )
+}
+
+fn is_pdf_extension(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("pdf")
+    )
+}
+
+fn is_mp3(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("mp3")
+    )
+}
+
+fn is_mp4ish(path: &Path) -> bool {
+    matches!(
+        path.extension()
+            .and_then(|e| e.to_str())
+            .map(str::to_lowercase)
+            .as_deref(),
+        Some("mp4" | "m4a" | "m4v" | "mov")
+    )
+}
+
+fn is_media_extension(path: &Path) -> bool {
+    is_mp3(path) || is_mp4ish(path)
+}
 
 #[derive(Copy, Clone, Debug, ValueEnum)]
 enum OutputFormatArg {
@@ -47,34 +163,92 @@ struct Cli {
 #[derive(Subcommand, Debug)]
 enum Command {
     /// Strip metadata from images (destructive: writes cleaned output).
+    ///
+    /// Removes EXIF, GPS, XMP, IPTC, C2PA content credentials, and
+    /// AI-generator signatures (Stable Diffusion, DALL-E, Midjourney,
+    /// Adobe Firefly) by fully decoding and re-encoding the image, so
+    /// every non-pixel segment is dropped by construction.
     Clean(CleanArgs),
-    /// Report what metadata is present, without modifying anything.
+    /// Report what metadata is present in an image, without modifying it.
     Inspect(InspectArgs),
-    /// Strip invisible-Unicode steganography (zero-width chars, bidi
-    /// overrides, Unicode Tag block, variation-selector smuggling) from
-    /// plain text files; also strips AI-key Markdown frontmatter (.md) and
-    /// identifying <meta> tags / comments (.html/.htm) (destructive:
-    /// writes cleaned output).
+    /// Strip hidden Unicode and AI-identifying artifacts from text files
+    /// (destructive: writes cleaned output).
+    ///
+    /// Removes invisible-Unicode steganography (zero-width characters,
+    /// bidi overrides, Unicode Tag block, variation-selector smuggling)
+    /// from any .txt/.md/.html/.svg file; additionally strips AI-key
+    /// Markdown frontmatter (.md), identifying <meta> tags and comments
+    /// (.html/.htm), and editor metadata/comments (.svg).
     CleanText(CleanTextArgs),
-    /// Report what invisible/steganography-relevant characters (and, for
-    /// .md/.html files, frontmatter keys / meta tags / comments) are
-    /// present in a text file, without modifying anything.
+    /// Report hidden Unicode and AI-identifying artifacts in a text file,
+    /// without modifying it.
+    ///
+    /// Covers the same ground as clean-text: invisible-Unicode
+    /// steganography everywhere, plus Markdown frontmatter keys (.md),
+    /// <meta> tags/comments (.html/.htm), and editor metadata/comments
+    /// (.svg).
     InspectText(InspectTextArgs),
-    /// Strip identifying metadata (author, company, custom tracking
-    /// properties) from DOCX/XLSX/PPTX office documents (destructive:
+    /// Strip identifying metadata from an Office document (destructive:
     /// writes cleaned output).
+    ///
+    /// Removes author, company, last-modified-by, and custom tracking
+    /// properties from a DOCX/XLSX/PPTX file's docProps/*.xml, leaving
+    /// document content byte-for-byte untouched.
     CleanDoc(CleanDocArgs),
     /// Report what identifying metadata is present in a DOCX/XLSX/PPTX
-    /// file, without modifying anything.
+    /// file, without modifying it.
     InspectDoc(InspectDocArgs),
-    /// Run a local web UI (loopback-only by default) for drag-and-drop
-    /// inspect/clean, with nothing ever leaving this machine.
+    /// Strip identifying metadata from a PDF file (destructive: writes
+    /// cleaned output).
+    ///
+    /// Removes the /Info dictionary (Author, Producer, Creator, Title,
+    /// Subject, Keywords, dates) and every XMP metadata stream, wherever
+    /// in the object graph it appears. Scope note: page content, form
+    /// fields, embedded file attachments, and JavaScript actions are not
+    /// touched — see the metacleaner-pdf crate docs for why.
+    CleanPdf(CleanPdfArgs),
+    /// Report what identifying metadata is present in a PDF file, without
+    /// modifying it.
+    InspectPdf(InspectPdfArgs),
+    /// Strip identifying metadata from an MP3/MP4/M4A/MOV file
+    /// (destructive: writes cleaned output).
+    ///
+    /// Removes every ID3v2 frame and the legacy ID3v1 trailer from MP3
+    /// (artist, album, comment, encoder tag, embedded artwork), or the
+    /// iTunes-style ilst metadata item list and chapter data from
+    /// MP4/M4A/MOV (title, artist, encoder, embedded artwork). Audio/
+    /// video sample data is untouched. Scope note: mp4ameta targets the
+    /// standard iTunes-style dictionary — see the metacleaner-media crate
+    /// docs for what that doesn't cover.
+    CleanMedia(CleanMediaArgs),
+    /// Report what identifying metadata is present in an MP3/MP4/M4A/MOV
+    /// file, without modifying it.
+    InspectMedia(InspectMediaArgs),
+    /// Run a local web UI for drag-and-drop inspect/clean.
+    ///
+    /// Loopback-only by default — nothing ever leaves this machine.
     Serve(ServeArgs),
+    /// Generate a shell completion script, printed to stdout.
+    ///
+    /// Packaging/maintainer tool, hidden from the primary command list.
+    /// Example: `metaclean completions bash > /etc/bash_completion.d/metaclean`.
+    #[command(hide = true)]
+    Completions {
+        /// Shell to generate a completion script for.
+        #[arg(value_enum)]
+        shell: Shell,
+    },
+    /// Generate the metaclean(1) man page (roff), printed to stdout.
+    ///
+    /// Packaging/maintainer tool, hidden from the primary command list.
+    /// Example: `metaclean man > /usr/share/man/man1/metaclean.1`.
+    #[command(hide = true)]
+    Man,
 }
 
 #[derive(Args, Debug)]
 struct CleanDocArgs {
-    /// DOCX/XLSX/PPTX files to clean. Accepts multiple for batch processing.
+    /// DOCX/XLSX/PPTX files (or, with --recursive, directories) to clean.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
 
@@ -89,22 +263,108 @@ struct CleanDocArgs {
     /// Emit machine-readable JSON instead of one line of text per file.
     #[arg(long)]
     json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
 }
 
 #[derive(Args, Debug)]
 struct InspectDocArgs {
-    /// DOCX/XLSX/PPTX files to inspect. Accepts multiple.
+    /// DOCX/XLSX/PPTX files (or, with --recursive, directories) to inspect.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
 
     /// Emit machine-readable JSON instead of a human-readable report.
     #[arg(long)]
     json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
+}
+
+#[derive(Args, Debug)]
+struct CleanPdfArgs {
+    /// PDF files (or, with --recursive, directories) to clean.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Directory to write cleaned files into (default: alongside each input, suffixed "-clean").
+    #[arg(short, long)]
+    out_dir: Option<PathBuf>,
+
+    /// Overwrite the input file in place instead of writing a new file.
+    #[arg(long, conflicts_with = "out_dir")]
+    in_place: bool,
+
+    /// Reject input files larger than this many megabytes, before reading them.
+    #[arg(long, default_value_t = metacleaner_pdf::DEFAULT_MAX_INPUT_BYTES / (1024 * 1024))]
+    max_input_mb: u64,
+
+    /// Emit machine-readable JSON instead of one line of text per file.
+    #[arg(long)]
+    json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
+}
+
+#[derive(Args, Debug)]
+struct InspectPdfArgs {
+    /// PDF files (or, with --recursive, directories) to inspect.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
+}
+
+#[derive(Args, Debug)]
+struct CleanMediaArgs {
+    /// MP3/MP4/M4A/MOV files (or, with --recursive, directories) to clean.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Directory to write cleaned files into (default: alongside each input, suffixed "-clean").
+    #[arg(short, long)]
+    out_dir: Option<PathBuf>,
+
+    /// Overwrite the input file in place instead of writing a new file.
+    #[arg(long, conflicts_with = "out_dir")]
+    in_place: bool,
+
+    /// Reject input files larger than this many megabytes, before reading them.
+    #[arg(long, default_value_t = metacleaner_media::DEFAULT_MAX_INPUT_BYTES / (1024 * 1024))]
+    max_input_mb: u64,
+
+    /// Emit machine-readable JSON instead of one line of text per file.
+    #[arg(long)]
+    json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
+}
+
+#[derive(Args, Debug)]
+struct InspectMediaArgs {
+    /// MP3/MP4/M4A/MOV files (or, with --recursive, directories) to inspect.
+    #[arg(required = true)]
+    inputs: Vec<PathBuf>,
+
+    /// Emit machine-readable JSON instead of a human-readable report.
+    #[arg(long)]
+    json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
 }
 
 #[derive(Args, Debug)]
 struct CleanTextArgs {
-    /// Text files to clean. Accepts multiple for batch processing.
+    /// Text files (or, with --recursive, directories) to clean.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
 
@@ -140,20 +400,42 @@ struct CleanTextArgs {
     #[arg(long)]
     keep_variation_selectors: bool,
 
+    /// Normalize curly quotes to straight quotes, em/en-dashes to a plain
+    /// hyphen, and non-breaking spaces to a regular space. Off by
+    /// default — unlike every other pass here, this changes ordinary
+    /// rendered characters, not just hidden ones — but these specific
+    /// characters are genuine, common AI-tool typographic artifacts, so
+    /// normalizing them doubles as removing a provenance signal.
+    #[arg(long)]
+    normalize_typography: bool,
+
     /// Emit machine-readable JSON instead of one line of text per file.
     #[arg(long)]
     json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
 }
 
 #[derive(Args, Debug)]
 struct InspectTextArgs {
-    /// Text files to inspect. Accepts multiple.
+    /// Text files (or, with --recursive, directories) to inspect.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
+
+    /// Also report advisory AI-writing-style indicators (stock vocabulary
+    /// and phrases, unusually uniform sentence length, elevated em-dash
+    /// usage). Off by default. This is a linter-style hint for reviewing
+    /// your own draft, not a score or a verdict — see the printed caveat.
+    #[arg(long)]
+    ai_style: bool,
 
     /// Emit machine-readable JSON instead of a human-readable report.
     #[arg(long)]
     json: bool,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
 }
 
 #[derive(Args, Debug)]
@@ -174,6 +456,17 @@ struct ServeArgs {
 }
 
 #[derive(Args, Debug)]
+struct RecurseArgs {
+    /// Also accept directories in the input list, walking them
+    /// recursively and auto-detecting each file's type by extension. Off
+    /// by default: since this is a destructive/reporting tool, a
+    /// directory argument is rejected unless you opt in explicitly,
+    /// rather than silently expanding to everything underneath it.
+    #[arg(short = 'r', long)]
+    recursive: bool,
+}
+
+#[derive(Args, Debug)]
 struct GuardArgs {
     /// Reject input files larger than this many megabytes, before reading them.
     /// Guards against decompression-bomb-style attacks on untrusted input.
@@ -187,7 +480,7 @@ struct GuardArgs {
 
 #[derive(Args, Debug)]
 struct CleanArgs {
-    /// Image files to clean (JPEG, PNG, WebP). Accepts multiple for batch processing.
+    /// Image files (or, with --recursive, directories) to clean.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
 
@@ -250,11 +543,14 @@ struct CleanArgs {
     /// Reject images that would require decoding more than this many megabytes of pixel data.
     #[arg(long, default_value_t = DEFAULT_MAX_DECODED_BYTES / (1024 * 1024))]
     max_decoded_mb: u64,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
 }
 
 #[derive(Args, Debug)]
 struct InspectArgs {
-    /// Image files to inspect (JPEG, PNG, WebP). Accepts multiple.
+    /// Image files (or, with --recursive, directories) to inspect.
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
 
@@ -264,6 +560,9 @@ struct InspectArgs {
 
     #[command(flatten)]
     guard: GuardArgs,
+
+    #[command(flatten)]
+    recurse: RecurseArgs,
 }
 
 #[tokio::main]
@@ -276,7 +575,32 @@ async fn main() -> ExitCode {
         Command::InspectText(args) => run_inspect_text(args),
         Command::CleanDoc(args) => run_clean_doc(args),
         Command::InspectDoc(args) => run_inspect_doc(args),
+        Command::CleanPdf(args) => run_clean_pdf(args),
+        Command::InspectPdf(args) => run_inspect_pdf(args),
+        Command::CleanMedia(args) => run_clean_media(args),
+        Command::InspectMedia(args) => run_inspect_media(args),
         Command::Serve(args) => run_serve(args).await,
+        Command::Completions { shell } => run_completions(*shell),
+        Command::Man => run_man(),
+    }
+}
+
+fn run_completions(shell: Shell) -> ExitCode {
+    let mut cmd = Cli::command();
+    let name = cmd.get_name().to_string();
+    clap_complete::generate(shell, &mut cmd, name, &mut std::io::stdout());
+    ExitCode::SUCCESS
+}
+
+fn run_man() -> ExitCode {
+    let cmd = Cli::command();
+    let man = clap_mangen::Man::new(cmd);
+    match man.render(&mut std::io::stdout()) {
+        Ok(()) => ExitCode::SUCCESS,
+        Err(e) => {
+            eprintln!("error: could not render man page: {e}");
+            ExitCode::FAILURE
+        }
     }
 }
 
@@ -296,6 +620,14 @@ async fn run_serve(args: &ServeArgs) -> ExitCode {
 }
 
 fn run_clean(args: &CleanArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_image_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let opts = CleanOptions {
         reset_fingerprint: !args.no_fingerprint_reset,
         fingerprint_strength: args.fingerprint_strength,
@@ -332,10 +664,10 @@ fn run_clean(args: &CleanArgs) -> ExitCode {
     };
 
     let mut failures = 0usize;
-    let total = args.inputs.len();
+    let total = inputs.len();
     let mut json_results = Vec::new();
 
-    for input_path in &args.inputs {
+    for input_path in &inputs {
         match process_one(
             input_path,
             &opts,
@@ -457,6 +789,14 @@ fn destination_path(input: &Path, out_dir: Option<&Path>, format: ImageFormat) -
 }
 
 fn run_inspect(args: &InspectArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_image_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let opts = InspectOptions {
         max_input_bytes: Some(args.guard.max_input_mb * 1024 * 1024),
         max_image_dimension: Some(args.guard.max_dimension),
@@ -466,7 +806,7 @@ fn run_inspect(args: &InspectArgs) -> ExitCode {
     let mut any_failures = false;
     let mut json_results = Vec::new();
 
-    for input_path in &args.inputs {
+    for input_path in &inputs {
         match inspect_one(input_path, &opts) {
             Ok(report) => {
                 if !report.is_clean() {
@@ -556,6 +896,14 @@ fn print_human_report(input_path: &Path, report: &InspectReport) {
 }
 
 fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_text_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let opts = metacleaner_text::CleanTextOptions {
         strip_zero_width: true,
         strip_zero_width_joiner: args.strip_zero_width_joiner,
@@ -575,12 +923,18 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
     }
 
     let mut failures = 0usize;
-    let total = args.inputs.len();
+    let total = inputs.len();
     let mut json_results = Vec::new();
 
-    for input_path in &args.inputs {
-        match process_text_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
-            Ok((out_path, report, frontmatter_removed, html_removed)) => {
+    for input_path in &inputs {
+        match process_text_one(
+            input_path,
+            &opts,
+            args.out_dir.as_deref(),
+            args.in_place,
+            args.normalize_typography,
+        ) {
+            Ok((out_path, report, frontmatter_removed, html_removed, svg_removed, typography_removed)) => {
                 if args.json {
                     json_results.push(serde_json::json!({
                         "file": input_path.display().to_string(),
@@ -597,6 +951,15 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
                         "html_findings_removed": html_removed.iter().map(|f| serde_json::json!({
                             "kind": f.kind.as_str(),
                             "label": f.label,
+                        })).collect::<Vec<_>>(),
+                        "svg_findings_removed": svg_removed.iter().map(|f| serde_json::json!({
+                            "kind": f.kind.as_str(),
+                            "label": f.label,
+                        })).collect::<Vec<_>>(),
+                        "typography_normalized": typography_removed.iter().map(|f| serde_json::json!({
+                            "kind": f.kind.as_str(),
+                            "codepoint": format!("U+{:04X}", f.codepoint),
+                            "count": f.count,
                         })).collect::<Vec<_>>(),
                     }));
                 } else {
@@ -626,8 +989,33 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
                             ", HTML: {meta_count} meta tag(s), {comment_count} comment(s) removed"
                         )
                     };
+                    let svg_note = if svg_removed.is_empty() {
+                        String::new()
+                    } else {
+                        let (meta_count, attr_count, comment_count) = svg_removed.iter().fold(
+                            (0usize, 0usize, 0usize),
+                            |(m, a, c), f| match f.kind {
+                                metacleaner_text::SvgFindingKind::MetadataElement => {
+                                    (m + 1, a, c)
+                                }
+                                metacleaner_text::SvgFindingKind::NamespacedAttr => {
+                                    (m, a + 1, c)
+                                }
+                                metacleaner_text::SvgFindingKind::Comment => (m, a, c + 1),
+                            },
+                        );
+                        format!(
+                            ", SVG: {meta_count} metadata element(s), {attr_count} namespaced attr(s), {comment_count} comment(s) removed"
+                        )
+                    };
+                    let typography_note = if typography_removed.is_empty() {
+                        String::new()
+                    } else {
+                        let total: usize = typography_removed.iter().map(|f| f.count).sum();
+                        format!(", typography normalized: {total} character(s)")
+                    };
                     println!(
-                        "ok   {} -> {} [{} -> {} chars, {} removed{}{}]",
+                        "ok   {} -> {} [{} -> {} chars, {} removed{}{}{}{}]",
                         input_path.display(),
                         out_path.display(),
                         report.chars_in,
@@ -635,6 +1023,8 @@ fn run_clean_text(args: &CleanTextArgs) -> ExitCode {
                         report.chars_in - report.chars_out,
                         fm_note,
                         html_note,
+                        svg_note,
+                        typography_note,
                     );
                 }
             }
@@ -683,18 +1073,28 @@ fn is_html(path: &Path) -> bool {
     )
 }
 
+fn is_svg(path: &Path) -> bool {
+    matches!(
+        path.extension().and_then(|e| e.to_str()).map(str::to_lowercase),
+        Some(ext) if ext == "svg"
+    )
+}
+
 #[allow(clippy::type_complexity)]
 fn process_text_one(
     input_path: &Path,
     opts: &metacleaner_text::CleanTextOptions,
     out_dir: Option<&Path>,
     in_place: bool,
+    normalize_typography: bool,
 ) -> Result<
     (
         PathBuf,
         metacleaner_text::CleanTextReport,
         Vec<metacleaner_text::FrontmatterFinding>,
         Vec<metacleaner_text::HtmlFinding>,
+        Vec<metacleaner_text::SvgFinding>,
+        Vec<metacleaner_text::TypographyFinding>,
     ),
     CliError,
 > {
@@ -716,6 +1116,20 @@ fn process_text_one(
         (text, Vec::new())
     };
 
+    let (text, svg_removed) = if is_svg(input_path) {
+        let (stripped, svg_report) = metacleaner_text::strip_svg(&text);
+        (stripped, svg_report.findings)
+    } else {
+        (text, Vec::new())
+    };
+
+    let (text, typography_removed) = if normalize_typography {
+        let (normalized, typo_report) = metacleaner_text::normalize_typography(&text);
+        (normalized, typo_report.findings)
+    } else {
+        (text, Vec::new())
+    };
+
     let (cleaned, report) = metacleaner_text::clean_text(&text, opts);
 
     let out_path = if in_place {
@@ -725,7 +1139,14 @@ fn process_text_one(
     };
 
     fs::write(&out_path, cleaned.as_bytes()).map_err(|e| CliError::Io(out_path.clone(), e))?;
-    Ok((out_path, report, frontmatter_removed, html_removed))
+    Ok((
+        out_path,
+        report,
+        frontmatter_removed,
+        html_removed,
+        svg_removed,
+        typography_removed,
+    ))
 }
 
 fn text_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
@@ -746,14 +1167,27 @@ fn text_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
 }
 
 fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_text_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let mut any_findings = false;
     let mut any_failures = false;
     let mut json_results = Vec::new();
 
-    for input_path in &args.inputs {
-        match inspect_text_one(input_path) {
-            Ok((report, fm_report, html_report)) => {
-                if !report.is_clean() || !fm_report.is_clean() || !html_report.is_clean() {
+    for input_path in &inputs {
+        match inspect_text_one(input_path, args.ai_style) {
+            Ok((report, fm_report, html_report, svg_report, typography_report, ai_style_report)) => {
+                if !report.is_clean()
+                    || !fm_report.is_clean()
+                    || !html_report.is_clean()
+                    || !svg_report.is_clean()
+                    || !typography_report.is_clean()
+                {
                     any_findings = true;
                 }
                 if args.json {
@@ -761,7 +1195,7 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                         "file": input_path.display().to_string(),
                         "ok": true,
                         "char_count": report.char_count,
-                        "clean": report.is_clean() && fm_report.is_clean() && html_report.is_clean(),
+                        "clean": report.is_clean() && fm_report.is_clean() && html_report.is_clean() && svg_report.is_clean() && typography_report.is_clean(),
                         "findings": report.findings.iter().map(|f| serde_json::json!({
                             "category": f.category.as_str(),
                             "codepoint": format!("U+{:04X}", f.codepoint),
@@ -776,10 +1210,31 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                             "label": f.label,
                             "value": f.value,
                         })).collect::<Vec<_>>(),
+                        "svg_findings": svg_report.findings.iter().map(|f| serde_json::json!({
+                            "kind": f.kind.as_str(),
+                            "label": f.label,
+                            "value": f.value,
+                        })).collect::<Vec<_>>(),
+                        "typography_findings": typography_report.findings.iter().map(|f| serde_json::json!({
+                            "kind": f.kind.as_str(),
+                            "codepoint": format!("U+{:04X}", f.codepoint),
+                            "count": f.count,
+                        })).collect::<Vec<_>>(),
+                        "ai_style_findings": ai_style_report.as_ref().map(|r| r.findings.iter().map(|f| serde_json::json!({
+                            "category": f.category.as_str(),
+                            "label": f.label,
+                            "detail": f.detail,
+                        })).collect::<Vec<_>>()),
+                        "ai_style_caveat": ai_style_report.as_ref().map(|_| metacleaner_text::FALSE_POSITIVE_CAVEAT),
                     }));
                 } else {
                     println!("{}  [{} chars]", input_path.display(), report.char_count);
-                    if report.is_clean() && fm_report.is_clean() && html_report.is_clean() {
+                    if report.is_clean()
+                        && fm_report.is_clean()
+                        && html_report.is_clean()
+                        && svg_report.is_clean()
+                        && typography_report.is_clean()
+                    {
                         println!("  no invisible/steganography-relevant characters found");
                     } else {
                         for finding in &report.findings {
@@ -798,6 +1253,37 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
                                 finding.label,
                                 finding.value
                             );
+                        }
+                        for finding in &svg_report.findings {
+                            println!(
+                                "  [svg:{}] {} = {}",
+                                finding.kind.as_str(),
+                                finding.label,
+                                finding.value
+                            );
+                        }
+                        for finding in &typography_report.findings {
+                            println!(
+                                "  [typography:{}] U+{:04X} x{}",
+                                finding.kind.as_str(),
+                                finding.codepoint,
+                                finding.count
+                            );
+                        }
+                    }
+                    if let Some(ai_style_report) = &ai_style_report {
+                        if ai_style_report.is_clean() {
+                            println!("  ai-style: no advisory patterns found");
+                        } else {
+                            println!("  ai-style ({}):", metacleaner_text::FALSE_POSITIVE_CAVEAT);
+                            for finding in &ai_style_report.findings {
+                                println!(
+                                    "    [{}] {} {}",
+                                    finding.category.as_str(),
+                                    finding.label,
+                                    finding.detail
+                                );
+                            }
                         }
                     }
                 }
@@ -830,11 +1316,15 @@ fn run_inspect_text(args: &InspectTextArgs) -> ExitCode {
 
 fn inspect_text_one(
     input_path: &Path,
+    ai_style: bool,
 ) -> Result<
     (
         metacleaner_text::InspectTextReport,
         metacleaner_text::FrontmatterReport,
         metacleaner_text::HtmlReport,
+        metacleaner_text::SvgReport,
+        metacleaner_text::TypographyReport,
+        Option<metacleaner_text::AiStyleReport>,
     ),
     CliError,
 > {
@@ -854,14 +1344,32 @@ fn inspect_text_one(
     } else {
         metacleaner_text::HtmlReport::default()
     };
+    let svg_report = if is_svg(input_path) {
+        metacleaner_text::inspect_svg(&text)
+    } else {
+        metacleaner_text::SvgReport::default()
+    };
+    let typography_report = metacleaner_text::inspect_typography(&text);
+    let ai_style_report = ai_style.then(|| metacleaner_text::inspect_ai_style(&text));
     Ok((
         metacleaner_text::inspect_text(&text),
         fm_report,
         html_report,
+        svg_report,
+        typography_report,
+        ai_style_report,
     ))
 }
 
 fn run_clean_doc(args: &CleanDocArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_doc_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let opts = metacleaner_docs::OoxmlOptions::default();
 
     if let Some(dir) = &args.out_dir {
@@ -875,10 +1383,10 @@ fn run_clean_doc(args: &CleanDocArgs) -> ExitCode {
     }
 
     let mut failures = 0usize;
-    let total = args.inputs.len();
+    let total = inputs.len();
     let mut json_results = Vec::new();
 
-    for input_path in &args.inputs {
+    for input_path in &inputs {
         match process_doc_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
             Ok((out_path, report)) => {
                 if args.json {
@@ -980,11 +1488,19 @@ fn doc_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
 }
 
 fn run_inspect_doc(args: &InspectDocArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_doc_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
     let mut any_findings = false;
     let mut any_failures = false;
     let mut json_results = Vec::new();
 
-    for input_path in &args.inputs {
+    for input_path in &inputs {
         match inspect_doc_one(input_path) {
             Ok(report) => {
                 if !report.is_clean() {
@@ -1042,6 +1558,412 @@ fn inspect_doc_one(input_path: &Path) -> Result<metacleaner_docs::InspectOoxmlRe
     let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
     metacleaner_docs::inspect_ooxml(&bytes, &metacleaner_docs::OoxmlOptions::default())
         .map_err(|e| CliError::Text(e.to_string()))
+}
+
+fn run_clean_pdf(args: &CleanPdfArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_pdf_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let opts = metacleaner_pdf::PdfOptions {
+        max_input_bytes: args.max_input_mb * 1024 * 1024,
+        ..Default::default()
+    };
+
+    if let Some(dir) = &args.out_dir {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!(
+                "error: could not create output directory {}: {e}",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let mut failures = 0usize;
+    let total = inputs.len();
+    let mut json_results = Vec::new();
+
+    for input_path in &inputs {
+        match process_pdf_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
+            Ok((out_path, report)) => {
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "output": out_path.display().to_string(),
+                        "bytes_in": report.bytes_in,
+                        "bytes_out": report.bytes_out,
+                        "stripped": report.stripped,
+                    }));
+                } else {
+                    let stripped = if report.stripped.is_empty() {
+                        "nothing found".to_string()
+                    } else {
+                        report.stripped.join(", ")
+                    };
+                    println!(
+                        "ok   {} -> {} [{} -> {} bytes, stripped: {}]",
+                        input_path.display(),
+                        out_path.display(),
+                        report.bytes_in,
+                        report.bytes_out,
+                        stripped,
+                    );
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    } else {
+        println!(
+            "\n{}/{total} PDF files cleaned successfully.",
+            total - failures
+        );
+    }
+
+    if failures > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn process_pdf_one(
+    input_path: &Path,
+    opts: &metacleaner_pdf::PdfOptions,
+    out_dir: Option<&Path>,
+    in_place: bool,
+) -> Result<(PathBuf, metacleaner_pdf::PdfCleanReport), CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let (cleaned, report) =
+        metacleaner_pdf::clean_pdf(&bytes, opts).map_err(|e| CliError::Text(e.to_string()))?;
+
+    let out_path = if in_place {
+        input_path.to_path_buf()
+    } else {
+        pdf_destination_path(input_path, out_dir)
+    };
+
+    fs::write(&out_path, &cleaned).map_err(|e| CliError::Io(out_path.clone(), e))?;
+    Ok((out_path, report))
+}
+
+fn pdf_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let file_name = format!("{stem}-clean.pdf");
+
+    match out_dir {
+        Some(dir) => dir.join(file_name),
+        None => input.with_file_name(file_name),
+    }
+}
+
+fn run_inspect_pdf(args: &InspectPdfArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_pdf_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut any_findings = false;
+    let mut any_failures = false;
+    let mut json_results = Vec::new();
+
+    for input_path in &inputs {
+        match inspect_pdf_one(input_path) {
+            Ok(report) => {
+                if !report.is_clean() {
+                    any_findings = true;
+                }
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "clean": report.is_clean(),
+                        "findings": report.findings.iter().map(|f| serde_json::json!({
+                            "location": f.location,
+                            "field": f.field,
+                            "value": f.value,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    println!("{}", input_path.display());
+                    if report.is_clean() {
+                        println!("  no identifying metadata found");
+                    } else {
+                        for finding in &report.findings {
+                            println!(
+                                "  [{}] {} = {}",
+                                finding.location, finding.field, finding.value
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                any_failures = true;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    }
+
+    if any_failures || any_findings {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn inspect_pdf_one(input_path: &Path) -> Result<metacleaner_pdf::InspectPdfReport, CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    metacleaner_pdf::inspect_pdf(&bytes, &metacleaner_pdf::PdfOptions::default())
+        .map_err(|e| CliError::Text(e.to_string()))
+}
+
+fn run_clean_media(args: &CleanMediaArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_media_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let opts = metacleaner_media::MediaOptions {
+        max_input_bytes: args.max_input_mb * 1024 * 1024,
+    };
+
+    if let Some(dir) = &args.out_dir {
+        if let Err(e) = fs::create_dir_all(dir) {
+            eprintln!(
+                "error: could not create output directory {}: {e}",
+                dir.display()
+            );
+            return ExitCode::FAILURE;
+        }
+    }
+
+    let mut failures = 0usize;
+    let total = inputs.len();
+    let mut json_results = Vec::new();
+
+    for input_path in &inputs {
+        match process_media_one(input_path, &opts, args.out_dir.as_deref(), args.in_place) {
+            Ok((out_path, bytes_in, bytes_out, stripped)) => {
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "output": out_path.display().to_string(),
+                        "bytes_in": bytes_in,
+                        "bytes_out": bytes_out,
+                        "stripped": stripped,
+                    }));
+                } else {
+                    let stripped_note = if stripped.is_empty() {
+                        "nothing found".to_string()
+                    } else {
+                        stripped.join(", ")
+                    };
+                    println!(
+                        "ok   {} -> {} [{} -> {} bytes, stripped: {}]",
+                        input_path.display(),
+                        out_path.display(),
+                        bytes_in,
+                        bytes_out,
+                        stripped_note,
+                    );
+                }
+            }
+            Err(e) => {
+                failures += 1;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    } else {
+        println!(
+            "\n{}/{total} media files cleaned successfully.",
+            total - failures
+        );
+    }
+
+    if failures > 0 {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+#[allow(clippy::type_complexity)]
+fn process_media_one(
+    input_path: &Path,
+    opts: &metacleaner_media::MediaOptions,
+    out_dir: Option<&Path>,
+    in_place: bool,
+) -> Result<(PathBuf, usize, usize, Vec<String>), CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let bytes_in = bytes.len();
+
+    let (cleaned, stripped) = if is_mp3(input_path) {
+        metacleaner_media::clean_mp3(&bytes, opts).map_err(|e| CliError::Text(e.to_string()))?
+    } else {
+        metacleaner_media::clean_mp4(&bytes, opts).map_err(|e| CliError::Text(e.to_string()))?
+    };
+    let bytes_out = cleaned.len();
+
+    let out_path = if in_place {
+        input_path.to_path_buf()
+    } else {
+        media_destination_path(input_path, out_dir)
+    };
+
+    fs::write(&out_path, &cleaned).map_err(|e| CliError::Io(out_path.clone(), e))?;
+    Ok((out_path, bytes_in, bytes_out, stripped))
+}
+
+fn media_destination_path(input: &Path, out_dir: Option<&Path>) -> PathBuf {
+    let stem = input
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "file".to_string());
+    let ext = input
+        .extension()
+        .map(|e| e.to_string_lossy().to_string())
+        .unwrap_or_else(|| "mp3".to_string());
+    let file_name = format!("{stem}-clean.{ext}");
+
+    match out_dir {
+        Some(dir) => dir.join(file_name),
+        None => input.with_file_name(file_name),
+    }
+}
+
+fn run_inspect_media(args: &InspectMediaArgs) -> ExitCode {
+    let inputs = match expand_inputs(&args.inputs, args.recurse.recursive, is_media_extension) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let mut any_findings = false;
+    let mut any_failures = false;
+    let mut json_results = Vec::new();
+
+    for input_path in &inputs {
+        match inspect_media_one(input_path) {
+            Ok(findings) => {
+                if !findings.is_empty() {
+                    any_findings = true;
+                }
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": true,
+                        "clean": findings.is_empty(),
+                        "findings": findings.iter().map(|f| serde_json::json!({
+                            "location": f.location,
+                            "field": f.field,
+                            "value": f.value,
+                        })).collect::<Vec<_>>(),
+                    }));
+                } else {
+                    println!("{}", input_path.display());
+                    if findings.is_empty() {
+                        println!("  no identifying metadata found");
+                    } else {
+                        for finding in &findings {
+                            println!(
+                                "  [{}] {} = {}",
+                                finding.location, finding.field, finding.value
+                            );
+                        }
+                    }
+                }
+            }
+            Err(e) => {
+                any_failures = true;
+                if args.json {
+                    json_results.push(serde_json::json!({
+                        "file": input_path.display().to_string(),
+                        "ok": false,
+                        "error": e.to_string(),
+                    }));
+                } else {
+                    eprintln!("fail {}: {e}", input_path.display());
+                }
+            }
+        }
+    }
+
+    if args.json {
+        println!("{}", serde_json::to_string_pretty(&json_results).unwrap());
+    }
+
+    if any_failures || any_findings {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
+fn inspect_media_one(input_path: &Path) -> Result<Vec<metacleaner_media::MediaFinding>, CliError> {
+    let bytes = fs::read(input_path).map_err(|e| CliError::Io(input_path.to_path_buf(), e))?;
+    let opts = metacleaner_media::MediaOptions::default();
+    if is_mp3(input_path) {
+        metacleaner_media::inspect_mp3(&bytes, &opts).map_err(|e| CliError::Text(e.to_string()))
+    } else {
+        metacleaner_media::inspect_mp4(&bytes, &opts).map_err(|e| CliError::Text(e.to_string()))
+    }
 }
 
 #[derive(Debug)]

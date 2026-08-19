@@ -1,0 +1,11 @@
+[package]
+name = "metacleaner-pdf"
+description = "Strip identifying metadata (the /Info dictionary and XMP metadata streams) from PDF files."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+lopdf = "0.44"
+thiserror = "1"

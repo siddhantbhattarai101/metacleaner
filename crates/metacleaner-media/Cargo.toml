@@ -1,0 +1,18 @@
+[package]
+name = "metacleaner-media"
+description = "Strip identifying metadata (ID3 tags / MP4 iTunes-style atoms) from MP3 and MP4/M4A/MOV audio-video files."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+# NOTE: id3 is MPL-2.0, unlike the rest of this workspace's dependencies
+# (MIT/Apache-2.0). MPL-2.0 is a weak-copyleft, file-level license — it
+# doesn't require this crate or the rest of the workspace to be
+# relicensed, only that changes to id3's own source files (which this
+# project doesn't modify) stay under MPL-2.0. Flagged here so it's not a
+# surprise during a license audit.
+id3 = "1"
+mp4ameta = "0.13"
+thiserror = "1"

@@ -19,6 +19,7 @@ const optQuality = document.getElementById("opt-quality");
 const optQualityVal = document.getElementById("opt-quality-val");
 const optFormat = document.getElementById("opt-format");
 const optStripZwj = document.getElementById("opt-strip-zwj");
+const optNormalizeTypography = document.getElementById("opt-normalize-typography");
 
 const imageOptionsEl = document.getElementById("image-options");
 const textOptionsEl = document.getElementById("text-options");
@@ -59,8 +60,10 @@ function fileKey(file) {
   return `${file.name}::${file.size}::${file.lastModified}`;
 }
 
-const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text", ".html", ".htm"];
+const TEXT_EXTENSIONS = [".txt", ".md", ".markdown", ".text", ".html", ".htm", ".svg"];
 const DOC_EXTENSIONS = [".docx", ".xlsx", ".pptx"];
+const PDF_EXTENSIONS = [".pdf"];
+const MEDIA_EXTENSIONS = [".mp3", ".mp4", ".m4a", ".m4v", ".mov"];
 
 function isTextFile(file) {
   const name = file.name.toLowerCase();
@@ -70,6 +73,16 @@ function isTextFile(file) {
 function isDocFile(file) {
   const name = file.name.toLowerCase();
   return DOC_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+function isPdfFile(file) {
+  const name = file.name.toLowerCase();
+  return PDF_EXTENSIONS.some((ext) => name.endsWith(ext));
+}
+
+function isMediaFile(file) {
+  const name = file.name.toLowerCase();
+  return MEDIA_EXTENSIONS.some((ext) => name.endsWith(ext));
 }
 
 function addFiles(fileList) {
@@ -93,6 +106,8 @@ function addFiles(fileList) {
       id,
       isText: isTextFile(file),
       isDoc: isDocFile(file),
+      isPdf: isPdfFile(file),
+      isMedia: isMediaFile(file),
       inspect: null,
       inspectError: null,
       cleanState: "idle",
@@ -157,6 +172,8 @@ async function runInspect(id) {
   let endpoint = "/api/inspect";
   if (entry.isText) endpoint = "/api/inspect-text";
   else if (entry.isDoc) endpoint = "/api/inspect-doc";
+  else if (entry.isPdf) endpoint = "/api/inspect-pdf";
+  else if (entry.isMedia) endpoint = "/api/inspect-media";
   try {
     const res = await fetch(endpoint, { method: "POST", body: form });
     const data = await res.json();
@@ -185,8 +202,13 @@ async function runClean(id) {
   if (entry.isText) {
     endpoint = "/api/clean-text";
     form.append("strip_zero_width_joiner", optStripZwj.checked ? "true" : "false");
+    form.append("normalize_typography", optNormalizeTypography.checked ? "true" : "false");
   } else if (entry.isDoc) {
     endpoint = "/api/clean-doc";
+  } else if (entry.isPdf) {
+    endpoint = "/api/clean-pdf";
+  } else if (entry.isMedia) {
+    endpoint = "/api/clean-media";
   } else {
     const noise = NOISE_LEVELS[optNoiseLevel.value] || NOISE_LEVELS.medium;
     form.append("enhance", optEnhance.checked ? "true" : "false");
@@ -261,7 +283,7 @@ function render() {
 // use case.
 function updateOptionsVisibility() {
   const all = Array.from(entries.values());
-  const hasImages = all.some((e) => !e.isText && !e.isDoc);
+  const hasImages = all.some((e) => !e.isText && !e.isDoc && !e.isPdf && !e.isMedia);
   const hasText = all.some((e) => e.isText);
   const hasDocs = all.some((e) => e.isDoc);
 
@@ -290,6 +312,10 @@ function renderCard(entry) {
     meta.textContent = `text · ${entry.inspect.char_count} chars`;
   } else if (entry.inspect && entry.isDoc) {
     meta.textContent = "office document";
+  } else if (entry.inspect && entry.isPdf) {
+    meta.textContent = "PDF document";
+  } else if (entry.inspect && entry.isMedia) {
+    meta.textContent = "audio/video file";
   } else if (entry.inspect) {
     meta.textContent = `${entry.inspect.format.toUpperCase()} ${entry.inspect.width}x${entry.inspect.height} · ${formatBytes(entry.inspect.bytes)}`;
   } else if (entry.inspectError) {
@@ -304,14 +330,21 @@ function renderCard(entry) {
   if (entry.inspect) {
     const frontmatterFindings = entry.inspect.frontmatter_findings || [];
     const htmlFindings = entry.inspect.html_findings || [];
-    const totalFindings = entry.inspect.findings.length + frontmatterFindings.length + htmlFindings.length;
+    const svgFindings = entry.inspect.svg_findings || [];
+    const typographyFindings = entry.inspect.typography_findings || [];
+    const totalFindings =
+      entry.inspect.findings.length +
+      frontmatterFindings.length +
+      htmlFindings.length +
+      svgFindings.length +
+      typographyFindings.length;
 
     const badge = document.createElement("span");
     if (entry.inspect.clean) {
       badge.className = "badge badge-ok";
       badge.textContent = entry.isText
         ? "no hidden characters found"
-        : entry.isDoc
+        : entry.isDoc || entry.isPdf || entry.isMedia
           ? "no identifying metadata found"
           : "no metadata found";
     } else {
@@ -328,11 +361,15 @@ function renderCard(entry) {
         row.className = "finding-row";
         const cat = document.createElement("span");
         cat.className = "cat";
-        cat.textContent = entry.isDoc ? `[${f.part}]` : `[${f.category}]`;
+        cat.textContent = entry.isDoc
+          ? `[${f.part}]`
+          : entry.isPdf || entry.isMedia
+            ? `[${f.location}]`
+            : `[${f.category}]`;
         const label = document.createElement("span");
         if (entry.isText) {
           label.textContent = `${f.codepoint} ×${f.count}`;
-        } else if (entry.isDoc) {
+        } else if (entry.isDoc || entry.isPdf || entry.isMedia) {
           label.textContent = `${f.field} = ${f.value}`;
         } else {
           label.textContent = `${f.label} (${formatBytes(f.size_bytes)})`;
@@ -361,6 +398,31 @@ function renderCard(entry) {
         cat.textContent = f.kind === "comment" ? "[html comment]" : "[html meta]";
         const label = document.createElement("span");
         label.textContent = f.kind === "comment" ? f.value : `${f.label}: ${f.value}`;
+        row.appendChild(cat);
+        row.appendChild(label);
+        findings.appendChild(row);
+      }
+      for (const f of svgFindings) {
+        const row = document.createElement("div");
+        row.className = "finding-row";
+        const cat = document.createElement("span");
+        cat.className = "cat";
+        cat.textContent =
+          f.kind === "comment" ? "[svg comment]" : f.kind === "metadata-element" ? "[svg metadata]" : "[svg attr]";
+        const label = document.createElement("span");
+        label.textContent = f.value ? `${f.label}: ${f.value}` : f.label;
+        row.appendChild(cat);
+        row.appendChild(label);
+        findings.appendChild(row);
+      }
+      for (const f of typographyFindings) {
+        const row = document.createElement("div");
+        row.className = "finding-row";
+        const cat = document.createElement("span");
+        cat.className = "cat";
+        cat.textContent = `[typography:${f.kind}]`;
+        const label = document.createElement("span");
+        label.textContent = `${f.codepoint} ×${f.count}`;
         row.appendChild(cat);
         row.appendChild(label);
         findings.appendChild(row);

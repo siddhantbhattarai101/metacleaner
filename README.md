@@ -1,7 +1,8 @@
 # metacleaner
 
 A local, offline metadata cleaner and AI-tag remover, written in Rust, for
-images, plain text/Markdown, HTML, and Office documents.
+images, plain text/Markdown, HTML, SVG, PDF, Office documents, and
+MP3/MP4/M4A/MOV audio-video files.
 
 - **Images** (JPEG, PNG, WebP, BMP, GIF, TIFF): strips EXIF, GPS, XMP, IPTC,
   C2PA content credentials, and AI-generator signatures (Stable Diffusion
@@ -17,15 +18,35 @@ images, plain text/Markdown, HTML, and Office documents.
 - **HTML** (`.html`/`.htm`): strips identifying `<meta>` tags (`generator`,
   `author`, `dc.creator`, ...) and non-conditional comments — the invisible-
   Unicode pass above applies here too.
+- **SVG** (`.svg`): strips editor-injected `<metadata>` elements (Inkscape/
+  Illustrator RDF/Dublin Core blocks), `inkscape:*`/`sodipodi:*` namespaced
+  attributes, and comments. `<title>`/`<desc>` are left alone — that's
+  accessibility content, not editor cruft.
+- **PDF** (`.pdf`): strips the `/Info` dictionary (Author, Producer,
+  Creator, Title, Subject, Keywords, dates) and every XMP metadata stream
+  in the file, wherever in the object graph it appears. Page content,
+  fonts, and images are untouched. Scope note: embedded file attachments,
+  form field values, and JavaScript actions aren't covered by this first
+  pass — see `crates/metacleaner-pdf/src/lib.rs` for the documented gap.
 - **Office documents** (`.docx`/`.xlsx`/`.pptx`): strips author, company,
   last-modified-by, and custom tracking properties from `docProps/*.xml`,
   leaving document content byte-for-byte untouched.
+- **Audio/video** (`.mp3`, `.mp4`/`.m4a`/`.m4v`/`.mov`): strips every
+  ID3v2 frame and the legacy ID3v1 trailer from MP3 (artist, album,
+  comment, encoder tag, embedded artwork), or the iTunes-style `ilst`
+  metadata item list and chapter data from MP4/M4A/MOV. Audio/video
+  sample data is untouched. Scope note: covers the standard iTunes-style
+  metadata dictionary — see `crates/metacleaner-media/src/mp4.rs` for the
+  documented gap on non-standard atoms. (Uses the `id3` crate, MPL-2.0 —
+  see `crates/metacleaner-media/Cargo.toml`.)
 
-A separate `inspect` (and per-format `inspect-text`/`inspect-doc`)
-subcommand reports what's present in a file without modifying it. A `serve`
-subcommand runs a local web UI (drag-and-drop, batch, download) at
-`http://127.0.0.1`, bound to loopback only, with options that adapt to
-whatever file type you drop.
+A separate `inspect` (and per-format `inspect-text`/`inspect-doc`/
+`inspect-pdf`/`inspect-media`) subcommand reports what's present in a file
+without modifying it. Every `clean`/`inspect` command also accepts
+directories via `--recursive`/`-r`, auto-detecting each file's type by
+extension. A `serve` subcommand runs a local web UI (drag-and-drop, batch,
+download) at `http://127.0.0.1`, bound to loopback only, with options that
+adapt to whatever file type you drop.
 
 No network calls, no server upload — everything runs on your machine.
 
@@ -80,12 +101,18 @@ metacleaner/
 │   │   └── models/         # Runtime); bundled model weights, own crate so
 │   │                       # metacleaner-core stays dependency-light
 │   ├── metacleaner-text/   # invisible-Unicode stripping, Markdown
-│   │                       # frontmatter, HTML <meta>/comment stripping —
-│   │                       # dependency-free hand-rolled scanners
+│   │                       # frontmatter, HTML <meta>/comment stripping,
+│   │                       # SVG editor-metadata stripping — dependency-
+│   │                       # free hand-rolled scanners
 │   ├── metacleaner-docs/   # OOXML (DOCX/XLSX/PPTX) metadata stripping
 │   │                       # (zip + quick-xml)
+│   ├── metacleaner-pdf/    # PDF /Info + XMP metadata stripping (lopdf)
+│   ├── metacleaner-media/  # MP3 (id3) + MP4/M4A/MOV (mp4ameta) metadata
+│   │                       # stripping
 │   └── metacleaner-cli/    # `metaclean` binary (clean / inspect / clean-text
-│       │                   # / inspect-text / clean-doc / inspect-doc / serve)
+│       │                   # / inspect-text / clean-doc / inspect-doc /
+│       │                   # clean-pdf / inspect-pdf / clean-media /
+│       │                   # inspect-media / serve)
 │       └── assets/         # embedded web UI (index.html/style.css/app.js),
 │                            # compiled into the binary via include_str! —
 │                            # no files to ship alongside it
@@ -118,13 +145,32 @@ needs no postinst script and depends on nothing beyond `libc6`/`libstdc++6`
 `crates/metacleaner-cli/Cargo.toml`'s `[package.metadata.deb]`). After
 installing, `metaclean` and `metaclean serve` are on your `PATH`.
 
+### Shell completions and man page
+
+`metaclean` can generate its own shell completion script and man page at
+runtime (via `clap_complete`/`clap_mangen`), so they always match the
+actual CLI rather than a hand-maintained copy:
+
+```bash
+metaclean completions bash > /etc/bash_completion.d/metaclean   # or zsh/fish/powershell/elvish
+metaclean man > /usr/share/man/man1/metaclean.1 && mandb
+```
+
+These two subcommands are intentionally hidden from `--help` (they're a
+packaging/maintainer tool, not a primary feature) but work like any other
+subcommand. They aren't yet wired into the `.deb` build's `assets` list —
+today that would break the plain `cargo deb -p metacleaner-cli` one-liner
+above, since the files don't exist until a binary has already been built.
+Automating that (build, generate, then package with the generated files
+as assets) is on the [Roadmap](#roadmap).
+
 ## Usage
 
 `metaclean` has a read-only/destructive pair of subcommands per file type:
 `inspect`/`clean` for images, `inspect-text`/`clean-text` for `.txt`/`.md`/
-`.html`/`.htm`, and `inspect-doc`/`clean-doc` for `.docx`/`.xlsx`/`.pptx`.
-Run the `inspect*` variant first if you want to know what's in a file before
-deciding to clean it.
+`.html`/`.htm`/`.svg`, `inspect-doc`/`clean-doc` for `.docx`/`.xlsx`/`.pptx`,
+and `inspect-pdf`/`clean-pdf` for `.pdf`. Run the `inspect*` variant first
+if you want to know what's in a file before deciding to clean it.
 
 ### `inspect` — report what's there, without touching the file
 
@@ -205,18 +251,30 @@ cleaning one.
 Run `metaclean --help`, `metaclean clean --help`, or `metaclean inspect --help`
 for the full flag list.
 
-### `inspect-text` / `clean-text` — text, Markdown, HTML
+### `inspect-text` / `clean-text` — text, Markdown, HTML, SVG
 
 ```bash
 # Report invisible characters / frontmatter keys / meta+comments present
-metaclean inspect-text notes.md page.html
+metaclean inspect-text notes.md page.html icon.svg
 
 # Strip them (writes notes-clean.md alongside the original)
-metaclean clean-text notes.md page.html
+metaclean clean-text notes.md page.html icon.svg
 
 # Also strip the zero-width joiner (off by default — it's what joins emoji
 # into family/profession sequences, so it's kept unless you need it gone)
 metaclean clean-text --strip-zero-width-joiner notes.md
+
+# Also normalize typography: curly quotes -> straight, em/en-dash -> hyphen,
+# non-breaking space -> regular space (off by default — these are genuine
+# AI-tool typographic artifacts, but this changes rendered characters, not
+# just hidden ones, unlike everything else clean-text does)
+metaclean clean-text --normalize-typography notes.md
+
+# Report advisory AI-writing-style indicators (stock vocabulary/phrases,
+# unusually uniform sentence length, elevated em-dash rate) alongside the
+# normal findings — informational only, never a score, never gates the
+# exit code; see the printed caveat about false positives
+metaclean inspect-text --ai-style notes.md
 ```
 
 For `.md` files, AI/tool-identifying frontmatter keys (`author`, `creator`,
@@ -226,9 +284,35 @@ since frontmatter is often functionally required by a site generator, not
 pure metadata. For `.html`/`.htm` files, identifying `<meta>` tags
 (`generator`, `author`, `dc.creator`, ...) and non-conditional HTML comments
 are removed; functional meta (`charset`, `viewport`, ...) and IE conditional
-comments (`<!--[if IE]>...<![endif]-->`) are left alone. Every other
-invisible/steganography-relevant character is always stripped from every
-text file, regardless of extension.
+comments (`<!--[if IE]>...<![endif]-->`) are left alone. For `.svg` files,
+editor-injected `<metadata>` elements (Inkscape/Illustrator RDF/Dublin Core),
+`inkscape:*`/`sodipodi:*` namespaced attributes, and comments are removed;
+`<title>`/`<desc>` are left alone since those are accessibility content.
+Every other invisible/steganography-relevant character is always stripped
+from every text file, regardless of extension.
+
+`--normalize-typography` (opt-in) additionally converts curly quotes to
+straight quotes, em/en-dashes to a plain hyphen, and non-breaking/narrow
+no-break spaces to a regular space. It's the one `clean-text` pass that
+changes ordinary rendered characters rather than only hidden/identifying
+ones — but ChatGPT/Claude/Gemini/Google Docs all default to smart quotes,
+em-dashes, and non-breaking spaces where a plain-keyboard human types
+straight quotes, hyphens, and regular spaces, so normalizing them doubles
+as removing a provenance signal. `inspect-text` always reports these
+findings regardless of the flag, same as every other category.
+
+`inspect-text --ai-style` (opt-in) additionally reports advisory
+AI-writing-style indicators: stock vocabulary/phrases documented as common
+LLM tells (sourced from Wikipedia's "Signs of AI writing"), unusually
+uniform sentence length (low "burstiness"), and an elevated em-dash rate.
+This is a linter-style hint for reviewing your own draft, **not** a score,
+percentage, or verdict, and it never affects the exit code — every report
+carries a caveat that these signals also occur in genuine human writing,
+especially formal/academic and non-native-English prose. There is no
+corresponding "clean" action: metacleaner strips *metadata about
+provenance* everywhere else in this tool; rewriting prose to defeat an
+AI-content detector is a different, deception-enabling capability and is
+out of scope by design.
 
 ### `inspect-doc` / `clean-doc` — DOCX, XLSX, PPTX
 
@@ -246,6 +330,64 @@ custom tracking properties live; `clean-doc` blanks the text nodes in those
 parts via a streaming XML rewrite while every other zip entry — including
 the actual document content — is copied through unchanged.
 
+### `inspect-pdf` / `clean-pdf` — PDF
+
+```bash
+# Report identifying metadata present (/Info fields, XMP packets)
+metaclean inspect-pdf report.pdf
+
+# Strip it (page content, fonts, and images are untouched)
+metaclean clean-pdf report.pdf
+```
+
+Strips the `/Info` dictionary (Author, Producer, Creator, Title, Subject,
+Keywords, CreationDate, ModDate) and every XMP metadata stream in the file
+— XMP can appear more than once (the document Catalog's packet, plus
+duplicates embedded in images or other objects), so every object is
+scanned rather than just the one the Catalog points to. Scope note:
+embedded file attachments, form field values, and JavaScript actions
+aren't covered by this first pass; see `crates/metacleaner-pdf/src/lib.rs`
+for the documented gap.
+
+### `inspect-media` / `clean-media` — MP3, MP4, M4A, MOV
+
+```bash
+# Report identifying metadata present (ID3 frames, MP4 metadata items)
+metaclean inspect-media podcast.mp3 clip.mp4
+
+# Strip it (audio/video sample data is untouched)
+metaclean clean-media podcast.mp3 clip.mp4
+```
+
+For `.mp3`, strips every ID3v2 frame (artist, album, comment, encoder tag
+`TSSE`, embedded artwork, custom `TXXX`/`PRIV` frames) and the legacy
+128/227-byte ID3v1 trailer, if present. For `.mp4`/`.m4a`/`.m4v`/`.mov`,
+strips the iTunes-style `ilst` metadata item list (title, artist, encoder,
+embedded artwork, custom freeform items) and chapter data. Both formats
+are edited in place — the existing tag/atom is located and
+replaced/removed, not a full re-encode — so audio/video sample data is
+byte-for-byte untouched. Scope note: `mp4ameta` targets the standard
+iTunes-style metadata dictionary; some camera- or editor-specific atoms
+outside it may not be covered — see `crates/metacleaner-media/src/mp4.rs`
+for the documented gap.
+
+### Recursive / batch directory input
+
+Every `clean*`/`inspect*` command accepts a directory in place of an
+explicit file list when you pass `--recursive`/`-r` — it's rejected
+without the flag, since a destructive tool shouldn't silently expand a
+mistyped path into "process everything underneath it":
+
+```bash
+metaclean clean --recursive ./photos
+metaclean inspect-text -r ./site/content
+```
+
+Each file's type is auto-detected by extension; files with an extension the
+command doesn't handle are skipped and counted in a single summary line
+rather than one line of noise per skip. A file passed explicitly (not via
+directory expansion) is always processed regardless of its extension.
+
 ### `serve` — local web UI
 
 ```bash
@@ -256,15 +398,15 @@ metaclean serve
 metaclean serve --port 9000 --no-open
 ```
 
-Drag files onto the page (or pick them) — images, text/Markdown/HTML, and
-Office documents can all be mixed in the same batch. Each file is inspected
-automatically on drop, showing findings inline, and the Options panel
-adapts to show only what's relevant to the file types actually present
-(image options, text options, or a doc-options note — Office documents have
+Drag files onto the page (or pick them) — images, text/Markdown/HTML/SVG,
+Office documents, and PDFs can all be mixed in the same batch. Each file is
+inspected automatically on drop, showing findings inline, and the Options
+panel adapts to show only what's relevant to the file types actually
+present (image options, text options, or a doc/PDF note — those have
 nothing to configure, everything identifying is always stripped). Then
 "Clean & download all" cleans every file server-side (via the same
-`metacleaner-core`/`metacleaner-text`/`metacleaner-docs` functions the CLI
-uses) and downloads each result through the browser.
+`metacleaner-core`/`metacleaner-text`/`metacleaner-docs`/`metacleaner-pdf`
+functions the CLI uses) and downloads each result through the browser.
 
 Binds to `127.0.0.1` (loopback) by default — nothing outside this machine
 can reach it. `--host` exists to override this, but only do so if you
@@ -312,7 +454,7 @@ legitimate images.
 - AI generator signatures embedded by DALL-E, Midjourney, Adobe Firefly, etc.
 - The file's pixel-level fingerprint (optional, on by default)
 
-**Text / Markdown / HTML:**
+**Text / Markdown / HTML / SVG:**
 - Zero-width characters, bidi-control overrides, Unicode Tag block
   smuggling, and supplementary-plane variation-selector smuggling — the
   same techniques used to invisibly watermark LLM output, and (Unicode Tag
@@ -323,10 +465,26 @@ legitimate images.
   (`author`, `creator`, `generator`, `model`, `prompt`, ...)
 - HTML `<meta>` tags with the same identifying names, and non-conditional
   HTML comments
+- SVG `<metadata>` elements (editor-injected RDF/Dublin Core), `inkscape:*`/
+  `sodipodi:*` namespaced attributes, and comments
+- Curly quotes, em/en-dashes, and non-breaking spaces (opt-in via
+  `--normalize-typography`) — genuine AI-tool typographic artifacts
 
 **Office documents (DOCX/XLSX/PPTX):**
 - Author, last-modified-by, company, manager, title, keywords, comments,
   and any custom tracking properties in `docProps/core.xml`/`app.xml`/`custom.xml`
+
+**PDF:**
+- `/Info` dictionary fields (Author, Producer, Creator, Title, Subject,
+  Keywords, CreationDate, ModDate, and any custom keys)
+- Every XMP metadata stream in the object graph, not just the one the
+  document Catalog points to
+
+**Audio/video (MP3/MP4/M4A/MOV):**
+- Every ID3v2 frame (artist, album, comment, encoder tag, embedded
+  artwork, custom `TXXX`/`PRIV` frames) and the legacy ID3v1 trailer, for MP3
+- The iTunes-style `ilst` metadata item list and chapter data, for
+  MP4/M4A/MOV
 
 ## What it can't remove
 
@@ -373,14 +531,33 @@ PNG, JPEG, GIF, and TIFF fixtures).
 watermark patterns, bidi-override spoofing, Unicode Tag block smuggling,
 supplementary variation selectors), zero-width-joiner emoji preservation,
 frontmatter key stripping (including dash/underscore-insensitive matching
-and leaving non-identifying keys untouched), and the HTML module (generator/
+and leaving non-identifying keys untouched), the HTML module (generator/
 author `<meta>` stripping, plain-comment stripping, IE conditional-comment
-preservation, and not mis-parsing a hypothetical `<metadata>` tag as `<meta>`).
+preservation, and not mis-parsing a hypothetical `<metadata>` tag as `<meta>`),
+and the SVG module (`<metadata>` element / `inkscape:`/`sodipodi:` attribute
+stripping while preserving `<title>`/`<desc>` and every other attribute).
 
 `metacleaner-docs`'s tests, plus real-file verification against fixtures
 generated with `python-docx`/`openpyxl`/`python-pptx`, confirm identifying
 properties are blanked while document content and every other zip entry are
 preserved byte-for-byte.
+
+`metacleaner-pdf`'s tests build a PDF with `lopdf` carrying both an `/Info`
+dictionary and an XMP metadata stream, verify `inspect_pdf` reports both,
+then verify `clean_pdf`'s output re-inspects as fully clean; also verified
+against a real PDF tagged with `exiftool` (author/producer/title plus an
+injected XMP packet) — `exiftool` itself confirms zero metadata survives
+the cleaned output.
+
+`metacleaner-media`'s tests build a minimal in-memory MP3 (via `id3`
+itself) and a hand-built minimal MP4 box tree (`ftyp`+`moov{mvhd,udta/
+meta/ilst}`+`mdat`) covering both formats' tag structures, verify
+`inspect_mp3`/`inspect_mp4` report the tagged fields, then verify
+`clean_mp3`/`clean_mp4` re-inspect as fully clean, plus an ID3v1-aware
+no-op check on untagged audio; also verified against a real MP3 tagged
+with `mutagen` (artist/album/comment/encoder) — `mutagen` itself confirms
+zero ID3 tags survive the cleaned output, with the audio payload
+byte-identical.
 
 ## Roadmap
 
@@ -388,9 +565,11 @@ preserved byte-for-byte.
   publish step) — a GitHub Actions workflow that rebuilds `Packages`/
   `Release`/`InRelease` and pushes a new `.deb` into `pool/main` on the
   `gh-pages` branch whenever a version is tagged.
-- PDF `/Info` dictionary + XMP metadata stripping, and EPUB metadata
-  stripping — remaining format coverage matching the fuller feature set of
-  tools like `watermarks-remover`.
+- EPUB metadata stripping — remaining format coverage matching the fuller
+  feature set of tools like `watermarks-remover`.
+- Wire `metaclean completions`/`metaclean man` (already implemented, see
+  [Shell completions and man page](#shell-completions-and-man-page)) into
+  the `cargo deb` flow automatically, instead of the current manual step.
 - Animated GIF / multi-page TIFF support — clean each frame/page instead of
   refusing the whole file (needs the multi-frame encode path, not just the
   single-frame one `clean()` uses today).

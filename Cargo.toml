@@ -6,6 +6,8 @@ members = [
     "crates/metacleaner-ai",
     "crates/metacleaner-text",
     "crates/metacleaner-docs",
+    "crates/metacleaner-pdf",
+    "crates/metacleaner-media",
 ]
 
 [workspace.package]

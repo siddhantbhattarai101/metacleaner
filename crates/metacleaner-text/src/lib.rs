@@ -35,6 +35,20 @@ pub use frontmatter::{
 mod html;
 pub use html::{inspect_html, strip_html, HtmlFinding, HtmlFindingKind, HtmlReport};
 
+mod svg;
+pub use svg::{inspect_svg, strip_svg, SvgFinding, SvgFindingKind, SvgReport};
+
+mod typography;
+pub use typography::{
+    inspect_typography, normalize_typography, TypographyFinding, TypographyFindingKind,
+    TypographyReport,
+};
+
+mod ai_style;
+pub use ai_style::{
+    inspect_ai_style, AiStyleCategory, AiStyleFinding, AiStyleReport, FALSE_POSITIVE_CAVEAT,
+};
+
 mod identifying_keys;
 
 /// What kind of invisible/steganography-relevant character a
