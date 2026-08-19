@@ -62,7 +62,7 @@ sudo install -m 0755 -d /etc/apt/keyrings
 curl -fsSL https://siddhantbhattarai.github.io/metacleaner/pubkey.gpg \
   | sudo tee /etc/apt/keyrings/metacleaner.asc > /dev/null
 
-echo "deb [signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai.github.io/metacleaner stable main" \
+echo "deb [arch=amd64 signed-by=/etc/apt/keyrings/metacleaner.asc] https://siddhantbhattarai.github.io/metacleaner stable main" \
   | sudo tee /etc/apt/sources.list.d/metacleaner.list
 
 sudo apt update
